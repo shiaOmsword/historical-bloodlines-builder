@@ -249,3 +249,40 @@ poetry build
 ## Лицензия
 
 MIT. См. [`LICENSE`](LICENSE).
+
+## Интерактивный Rich launcher
+
+Для запуска без ручного набора аргументов доступна отдельная интерактивная
+оболочка:
+
+```powershell
+poetry run bloodlines-launcher
+```
+
+Лаунчер не заменяет обычную команду `bloodlines`, а работает поверх того же
+`BuildGenealogyUseCase`. В нём доступны:
+
+- быстрая сборка с путями из `Settings` и PDF A5;
+- выбор входного Excel, PDF/SVG/PNG и выходного пути;
+- выбор A5 или A4 для PDF;
+- просмотр текущей конфигурации и доступности Graphviz;
+- открытие каталога результатов.
+
+Навигация построена на стеке маршрутов. Экран возвращает одну из команд
+`push`, `pop`, `replace`, `reset`, `stay` или `exit`, а `Router` изменяет
+историю переходов. Экраны не создают и не импортируют друг друга напрямую.
+
+```text
+MainScreen
+    -> push(BuildMenu)
+BuildMenuScreen
+    -> push(CustomBuild)
+CustomBuildScreen
+    -> replace(BuildResult)
+BuildResultScreen
+    -> pop()
+BuildMenuScreen
+```
+
+Код лаунчера находится в
+`src/historical_bloodlines/presentation/launcher/`.

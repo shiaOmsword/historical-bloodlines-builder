@@ -33,6 +33,7 @@ pytest = "^8.4.1"
 
 [tool.poetry.scripts]
 bloodlines = "historical_bloodlines.cli:main"
+bloodlines-launcher = "historical_bloodlines.presentation.launcher:main"
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]

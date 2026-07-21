@@ -1,0 +1,323 @@
+from __future__ import annotations
+
+from collections.abc import Mapping
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
+
+from rich.console import Console
+from rich.panel import Panel
+from rich.prompt import Confirm, Prompt
+from rich.table import Table
+
+from historical_bloodlines.application.services.build_genealogy import (
+    BuildGenealogyUseCase,
+    PageFormat,
+)
+from historical_bloodlines.config.settings import Settings
+from historical_bloodlines.presentation.launcher.components import (
+    graphviz_status,
+    open_in_file_manager,
+    render_header,
+    render_menu,
+    render_paths,
+    wait_for_enter,
+)
+from historical_bloodlines.presentation.launcher.navigation import (
+    NavigationCommand,
+    Route,
+)
+
+
+@dataclass(frozen=True, slots=True)
+class BuildOptions:
+    input_path: Path
+    output_path: Path
+    page_format: PageFormat = PageFormat.A5
+
+
+class MainScreen:
+    def __init__(self, console: Console, settings: Settings) -> None:
+        self._console = console
+        self._settings = settings
+
+    def run(self) -> NavigationCommand:
+        render_header(
+            self._console,
+            "Rich launcher",
+            subtitle="Интерактивная оболочка над bloodlines build",
+        )
+        render_menu(
+            self._console,
+            (
+                ("1", "Собрать родословную", "Быстрый или настраиваемый запуск"),
+                ("2", "Конфигурация", "Пути по умолчанию и Graphviz"),
+                ("3", "Открыть результаты", "Открыть data/output в проводнике"),
+                ("0", "Выход", "Завершить launcher"),
+            ),
+        )
+
+        choice = Prompt.ask(
+            "[bold cyan]Выберите действие[/bold cyan]",
+            choices=["1", "2", "3", "0"],
+            console=self._console,
+        )
+
+        match choice:
+            case "1":
+                return NavigationCommand.push(Route.BUILD_MENU)
+            case "2":
+                return NavigationCommand.push(Route.CONFIGURATION)
+            case "3":
+                self._open_output_directory()
+                return NavigationCommand.stay()
+            case _:
+                return NavigationCommand.exit()
+
+    def _open_output_directory(self) -> None:
+        try:
+            open_in_file_manager(self._settings.output_file)
+        except Exception as exc:
+            self._console.print(
+                Panel(str(exc), title="Не удалось открыть папку", border_style="red")
+            )
+            wait_for_enter(self._console)
+
+
+class BuildMenuScreen:
+    def __init__(self, console: Console, settings: Settings) -> None:
+        self._console = console
+        self._settings = settings
+
+    def run(self) -> NavigationCommand:
+        render_header(self._console, "Сборка родословной")
+        render_menu(
+            self._console,
+            (
+                ("1", "Быстрая сборка", "Использовать пути и A5 по умолчанию"),
+                ("2", "Настроить сборку", "Выбрать Excel, формат и файл результата"),
+                ("0", "Назад", "Вернуться в главное меню"),
+            ),
+        )
+
+        choice = Prompt.ask(
+            "[bold cyan]Режим[/bold cyan]",
+            choices=["1", "2", "0"],
+            console=self._console,
+        )
+
+        match choice:
+            case "1":
+                options = BuildOptions(
+                    input_path=self._settings.input_file,
+                    output_path=self._settings.output_file,
+                    page_format=PageFormat.A5,
+                )
+                return NavigationCommand.push(
+                    Route.BUILD_RESULT,
+                    options=options,
+                )
+            case "2":
+                return NavigationCommand.push(Route.CUSTOM_BUILD)
+            case _:
+                return NavigationCommand.pop()
+
+
+class CustomBuildScreen:
+    def __init__(self, console: Console, settings: Settings) -> None:
+        self._console = console
+        self._settings = settings
+
+    def run(self) -> NavigationCommand:
+        render_header(
+            self._console,
+            "Настройка сборки",
+            subtitle="Enter принимает значение по умолчанию",
+        )
+
+        if not Confirm.ask(
+            "Перейти к настройке?",
+            default=True,
+            console=self._console,
+        ):
+            return NavigationCommand.pop()
+
+        input_path = Path(
+            Prompt.ask(
+                "Путь к Excel",
+                default=str(self._settings.input_file),
+                console=self._console,
+            )
+        ).expanduser()
+
+        output_format = Prompt.ask(
+            "Формат результата",
+            choices=["pdf", "svg", "png"],
+            default=self._default_output_format(),
+            console=self._console,
+        )
+
+        default_output = self._settings.output_file.with_suffix(f".{output_format}")
+        output_path = Path(
+            Prompt.ask(
+                "Путь результата",
+                default=str(default_output),
+                console=self._console,
+            )
+        ).expanduser()
+        expected_suffix = f".{output_format}"
+        if output_path.suffix.casefold() != expected_suffix:
+            output_path = output_path.with_suffix(expected_suffix)
+
+        page_format = PageFormat.A5
+        if output_format == "pdf":
+            page_format = PageFormat(
+                Prompt.ask(
+                    "Формат страницы",
+                    choices=[PageFormat.A5.value, PageFormat.A4.value],
+                    default=PageFormat.A5.value,
+                    console=self._console,
+                )
+            )
+
+        options = BuildOptions(
+            input_path=input_path,
+            output_path=output_path,
+            page_format=page_format,
+        )
+        render_paths(
+            self._console,
+            input_path=options.input_path,
+            output_path=options.output_path,
+            page_format=options.page_format.value,
+        )
+
+        if not Confirm.ask(
+            "Запустить сборку?",
+            default=True,
+            console=self._console,
+        ):
+            return NavigationCommand.pop()
+
+        # The setup form should not remain in history. Back from the result
+        # returns to the build menu instead of reopening all prompts.
+        return NavigationCommand.replace(
+            Route.BUILD_RESULT,
+            options=options,
+        )
+
+    def _default_output_format(self) -> str:
+        suffix = self._settings.output_file.suffix.casefold().removeprefix(".")
+        return suffix if suffix in {"pdf", "svg", "png"} else "pdf"
+
+
+class BuildResultScreen:
+    def __init__(
+        self,
+        console: Console,
+        use_case: BuildGenealogyUseCase,
+        options: BuildOptions,
+    ) -> None:
+        self._console = console
+        self._use_case = use_case
+        self._options = options
+
+    def run(self) -> NavigationCommand:
+        render_header(self._console, "Выполнение сборки")
+        render_paths(
+            self._console,
+            input_path=self._options.input_path,
+            output_path=self._options.output_path,
+            page_format=self._options.page_format.value,
+        )
+
+        if not self._options.input_path.exists():
+            self._console.print(
+                Panel(
+                    f"Excel-файл не найден:\n{self._options.input_path}",
+                    title="Ошибка",
+                    border_style="red",
+                )
+            )
+            wait_for_enter(self._console)
+            return NavigationCommand.pop()
+
+        try:
+            with self._console.status(
+                "[bold cyan]Читаю Excel и строю графы...[/bold cyan]",
+                spinner="dots",
+            ):
+                result = self._use_case.execute(
+                    self._options.input_path,
+                    self._options.output_path,
+                    page_format=self._options.page_format,
+                )
+        except Exception as exc:
+            self._console.print(
+                Panel(
+                    str(exc),
+                    title="Сборка завершилась ошибкой",
+                    border_style="red",
+                )
+            )
+            wait_for_enter(self._console)
+            return NavigationCommand.pop()
+
+        table = Table(show_header=False, box=None, padding=(0, 1))
+        table.add_column(style="bold cyan", width=16)
+        table.add_column()
+        table.add_row("Создано", str(result.output_path))
+        table.add_row("Предупреждения", str(len(result.warnings)))
+
+        self._console.print(
+            Panel(table, title="Готово", border_style="green")
+        )
+        if result.warnings:
+            warning_text = "\n".join(f"• {warning}" for warning in result.warnings)
+            self._console.print(
+                Panel(
+                    warning_text,
+                    title="Предупреждения",
+                    border_style="yellow",
+                )
+            )
+
+        wait_for_enter(self._console)
+        return NavigationCommand.pop()
+
+
+class ConfigurationScreen:
+    def __init__(self, console: Console, settings: Settings) -> None:
+        self._console = console
+        self._settings = settings
+
+    def run(self) -> NavigationCommand:
+        render_header(self._console, "Конфигурация")
+        graphviz_ready, graphviz_details = graphviz_status()
+
+        table = Table(show_header=False, box=None, padding=(0, 1))
+        table.add_column(style="bold cyan", width=22)
+        table.add_column()
+        table.add_row("Excel по умолчанию", str(self._settings.input_file))
+        table.add_row(
+            "Excel существует",
+            "[green]да[/green]" if self._settings.input_file.exists() else "[red]нет[/red]",
+        )
+        table.add_row("Результат по умолчанию", str(self._settings.output_file))
+        table.add_row("Страница PDF", "A5 landscape")
+        table.add_row(
+            "Graphviz",
+            "[green]готов[/green]" if graphviz_ready else "[red]не готов[/red]",
+        )
+        table.add_row("Команды Graphviz", graphviz_details)
+
+        self._console.print(Panel(table, border_style="bright_black"))
+        wait_for_enter(self._console)
+        return NavigationCommand.pop()
+
+
+def require_build_options(params: Mapping[str, Any]) -> BuildOptions:
+    options = params.get("options")
+    if not isinstance(options, BuildOptions):
+        raise TypeError("Route BUILD_RESULT requires BuildOptions")
+    return options
