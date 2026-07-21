@@ -384,3 +384,40 @@ def test_render_uses_special_nazvanie_row_for_pdf_title_and_filename(tmp_path: P
     assert output_files[0].name.startswith("001_Династия_Комнинов")
     svg_text = output_files[0].read_text(encoding="utf-8")
     assert "Династия Комнинов" in svg_text
+
+
+def test_graphviz_is_invoked_with_ascii_temporary_filename(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    from graphviz import Graph
+
+    source = tmp_path / "input.xlsx"
+    output = tmp_path / "tree.svg"
+
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "Sheet internal name"
+    sheet.append(["Название", "Династия Комнинов"])
+    sheet.append(HEADERS)
+    sheet.append([1, "Parent", None, None, None, "Child", None])
+    sheet.append([2, "Child", None, None, None, None, None])
+    workbook.save(source)
+
+    invoked_filenames: list[str] = []
+
+    def fake_render(self, *, filename, directory, cleanup, neato_no_op):
+        invoked_filenames.append(filename)
+        rendered = Path(directory) / f"{filename}.{self.format}"
+        rendered.write_text("<svg></svg>", encoding="utf-8")
+        return str(rendered)
+
+    monkeypatch.setattr(Graph, "render", fake_render)
+
+    rendered, warnings = BuildGenealogyUseCase().execute(source, output)
+
+    assert warnings == ()
+    assert len(invoked_filenames) == 1
+    assert invoked_filenames[0].isascii()
+    final_output = rendered / "001_Династия_Комнинов.svg"
+    assert final_output.is_file()

@@ -345,9 +345,3 @@ PyInstaller должен запускаться на Windows. Установит
 ```
 
 Подробности находятся в [`packaging/README.md`](packaging/README.md).
-
-### Сборка через GitHub Actions
-
-Workflow `.github/workflows/windows-portable.yml` запускается вручную через
-`workflow_dispatch` либо при публикации тега `v*`. После успешного запуска в
-Artifacts появляется архив `HistoricalBloodlines-windows-x64`.

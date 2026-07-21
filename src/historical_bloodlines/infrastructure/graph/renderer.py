@@ -4,7 +4,7 @@ import html
 import math
 from itertools import pairwise
 from pathlib import Path
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from graphviz import Graph
 
@@ -322,15 +322,21 @@ class GraphvizGenealogyRenderer:
             for child_x, top_y in zip(child_xs, child_tops):
                 segment(child_x, bar_y, child_x, top_y)
 
+        # Graphviz for Windows still opens input files through APIs that may
+        # reject non-ASCII filenames. Render under a private ASCII-only stem
+        # and rename the finished artifact afterwards. The visible title and
+        # the final user-facing filename remain unchanged.
+        temporary_stem = f"bloodlines_render_{uuid4().hex}"
         rendered = Path(
             graph.render(
-                filename=output_path.stem,
+                filename=temporary_stem,
                 directory=str(output_path.parent),
                 cleanup=True,
                 neato_no_op=2,
             )
         )
-        return rendered
+        rendered.replace(output_path)
+        return output_path
 
     @staticmethod
     def _horizontal_bus_segments(
