@@ -1,0 +1,44 @@
+[tool.poetry]
+name = "historical-bloodlines"
+version = "0.1.0"
+description = "Generate book-style historical genealogy diagrams from Excel workbooks"
+authors = ["Alexander"]
+readme = "README.md"
+license = "MIT"
+keywords = ["genealogy", "excel", "graphviz", "networkx", "pdf"]
+packages = [{ include = "historical_bloodlines", from = "src" }]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: Education",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Multimedia :: Graphics",
+    "Topic :: Office/Business",
+]
+
+[tool.poetry.dependencies]
+python = ">=3.12,<4.0"
+graphviz = "^0.21"
+networkx = "^3.5"
+openpyxl = "^3.1.5"
+pypdf = "^5.9.0"
+rich = "^15.0.0"
+typer = "^0.27.0"
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^8.4.1"
+
+[tool.poetry.scripts]
+bloodlines = "historical_bloodlines.cli:main"
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+addopts = "-ra"
+
+[build-system]
+requires = ["poetry-core>=2.0.0,<3.0.0"]
+build-backend = "poetry.core.masonry.api"
