@@ -1,0 +1,54 @@
+name: windows-portable
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+jobs:
+  build-windows-portable:
+    runs-on: windows-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Install Poetry
+        shell: pwsh
+        run: python -m pip install "poetry>=2,<3"
+
+      - name: Install Graphviz
+        shell: pwsh
+        run: choco install graphviz -y --no-progress
+
+      - name: Locate Graphviz
+        shell: pwsh
+        run: |
+          $Candidates = Get-ChildItem "C:\Program Files" -Directory -Filter "Graphviz*" -ErrorAction SilentlyContinue
+          $GraphvizHome = $Candidates |
+            Where-Object { Test-Path (Join-Path $_.FullName "bin\dot.exe") } |
+            Select-Object -First 1 -ExpandProperty FullName
+          if ([string]::IsNullOrWhiteSpace($GraphvizHome)) {
+            throw "Graphviz installation directory was not found."
+          }
+          "GRAPHVIZ_HOME=$GraphvizHome" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Build and test portable application
+        shell: pwsh
+        run: .\scripts\build_windows.ps1 -GraphvizHome "$env:GRAPHVIZ_HOME"
+
+      - name: Upload portable archive
+        uses: actions/upload-artifact@v6
+        with:
+          name: HistoricalBloodlines-windows-x64
+          path: release/HistoricalBloodlines-windows-x64.zip
+          if-no-files-found: error

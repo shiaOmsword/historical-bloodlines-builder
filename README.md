@@ -286,3 +286,68 @@ BuildMenuScreen
 
 Код лаунчера находится в
 `src/historical_bloodlines/presentation/launcher/`.
+
+## Portable Windows-приложение
+
+Для пользователей без Python и Graphviz предусмотрена `onedir`-сборка. После
+распаковки архива запускается только:
+
+```text
+HistoricalBloodlines.exe
+```
+
+Внутри `_internal/graphviz` находится собственный Graphviz, поэтому системная
+установка не требуется. Пользователь выбирает `.xlsx` и место сохранения через
+стандартные окна Windows. После построения launcher предлагает открыть результат
+или показать его в Проводнике.
+
+Пути по умолчанию создаются в пользовательской папке «Документы»:
+
+```text
+Documents/Historical Bloodlines/
+├── input/input.xlsx
+└── output/genealogy.pdf
+```
+
+Переменные `BLOODLINES_DATA_DIR`, `BLOODLINES_INPUT_FILE` и
+`BLOODLINES_OUTPUT_FILE` по-прежнему позволяют переопределить эти пути.
+
+### Сборка `.exe`
+
+PyInstaller должен запускаться на Windows. Установите Graphviz на машине
+сборки, затем выполните из корня проекта:
+
+```powershell
+.\scripts\build_windows.ps1
+```
+
+Если Graphviz не добавлен в `PATH`:
+
+```powershell
+.\scripts\build_windows.ps1 -GraphvizHome "C:\Program Files\Graphviz"
+```
+
+Скрипт выполняет следующие действия:
+
+1. устанавливает зависимости проекта и PyInstaller;
+2. запускает тесты;
+3. копирует полную Windows-установку Graphviz в `vendor/graphviz`;
+4. создаёт `dist/HistoricalBloodlines/HistoricalBloodlines.exe`;
+5. копирует portable-сборку во временный путь с пробелами;
+6. убирает Python и системный Graphviz из `PATH`;
+7. запускает полный self-test Excel → Graphviz → PDF;
+8. создаёт `release/HistoricalBloodlines-windows-x64.zip`.
+
+Ручной self-test готовой сборки:
+
+```powershell
+.\dist\HistoricalBloodlines\HistoricalBloodlines.exe --self-test
+```
+
+Подробности находятся в [`packaging/README.md`](packaging/README.md).
+
+### Сборка через GitHub Actions
+
+Workflow `.github/workflows/windows-portable.yml` запускается вручную через
+`workflow_dispatch` либо при публикации тега `v*`. После успешного запуска в
+Artifacts появляется архив `HistoricalBloodlines-windows-x64`.

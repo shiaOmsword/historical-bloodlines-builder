@@ -7,7 +7,7 @@ from historical_bloodlines.application.services.build_genealogy import (
     BuildGenealogyUseCase,
     PageFormat,
 )
-from historical_bloodlines.config import get_settings
+from historical_bloodlines.config import get_settings, prepare_bundled_graphviz
 
 app = typer.Typer(
     help="Build book-style historical genealogy diagrams from Excel files.",
@@ -38,6 +38,7 @@ def build(
         case_sensitive=False,
     ),
 ) -> None:
+    prepare_bundled_graphviz()
     settings = get_settings()
     source = input_path or settings.input_file
     target = output_path or settings.output_file

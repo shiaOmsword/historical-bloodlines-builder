@@ -29,3 +29,13 @@ Thumbs.db
 *.svg
 
 *.zip
+
+# PyInstaller and portable releases
+/build/
+/dist/
+/release/
+*.spec.bak
+
+# Locally copied Graphviz runtime
+/vendor/graphviz/*
+!/vendor/graphviz/README.md

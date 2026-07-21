@@ -86,18 +86,43 @@ def graphviz_status() -> tuple[bool, str]:
     return False, f"Не найдены команды: {', '.join(missing)}"
 
 
-def open_in_file_manager(path: Path) -> None:
-    directory = path if path.is_dir() else path.parent
-    directory.mkdir(parents=True, exist_ok=True)
+def open_path(path: Path) -> None:
+    target = path.expanduser().resolve()
+    if not target.exists():
+        raise FileNotFoundError(f"Путь не найден: {target}")
 
     if os.name == "nt":
-        os.startfile(directory)  # type: ignore[attr-defined]
+        os.startfile(target)  # type: ignore[attr-defined]
         return
     if sys.platform == "darwin":
-        subprocess.Popen(["open", str(directory)])
+        subprocess.Popen(["open", str(target)])
         return
 
     opener = shutil.which("xdg-open")
     if opener is None:
         raise RuntimeError("Команда xdg-open не найдена")
-    subprocess.Popen([opener, str(directory)])
+    subprocess.Popen([opener, str(target)])
+
+
+def open_in_file_manager(path: Path) -> None:
+    target = path.expanduser()
+    directory = target if target.is_dir() else target.parent
+    directory.mkdir(parents=True, exist_ok=True)
+
+    if os.name == "nt":
+        if target.exists() and target.is_file():
+            subprocess.Popen(["explorer", "/select,", str(target.resolve())])
+        else:
+            os.startfile(directory.resolve())  # type: ignore[attr-defined]
+        return
+    if sys.platform == "darwin":
+        if target.exists() and target.is_file():
+            subprocess.Popen(["open", "-R", str(target.resolve())])
+        else:
+            subprocess.Popen(["open", str(directory.resolve())])
+        return
+
+    opener = shutil.which("xdg-open")
+    if opener is None:
+        raise RuntimeError("Команда xdg-open не найдена")
+    subprocess.Popen([opener, str(directory.resolve())])

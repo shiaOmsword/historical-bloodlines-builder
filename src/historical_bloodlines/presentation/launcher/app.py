@@ -1,12 +1,20 @@
 from __future__ import annotations
 
+import sys
+from collections.abc import Sequence
+
 from rich.console import Console
+from rich.panel import Panel
 from rich.theme import Theme
 
 from historical_bloodlines.application.services.build_genealogy import (
     BuildGenealogyUseCase,
 )
-from historical_bloodlines.config import get_settings
+from historical_bloodlines.config import (
+    GraphvizRuntimeError,
+    get_settings,
+    prepare_bundled_graphviz,
+)
 from historical_bloodlines.presentation.launcher.navigation import (
     Route,
     Router,
@@ -20,6 +28,7 @@ from historical_bloodlines.presentation.launcher.screens import (
     MainScreen,
     require_build_options,
 )
+from historical_bloodlines.presentation.launcher.self_test import run_self_test
 
 
 LAUNCHER_THEME = Theme(
@@ -62,8 +71,36 @@ def build_router(console: Console | None = None) -> Router:
     return Router(factory=factory, initial_route=Route.MAIN)
 
 
-def main() -> None:
+def main(argv: Sequence[str] | None = None) -> int:
+    arguments = tuple(sys.argv[1:] if argv is None else argv)
     console = Console(theme=LAUNCHER_THEME)
+
+    try:
+        prepare_bundled_graphviz()
+    except GraphvizRuntimeError as exc:
+        console.print(
+            Panel(
+                str(exc),
+                title="Graphviz недоступен",
+                border_style="red",
+            )
+        )
+        return 1
+
+    if "--self-test" in arguments:
+        return run_self_test(console)
+
+    unknown = [argument for argument in arguments if argument != "--self-test"]
+    if unknown:
+        console.print(
+            Panel(
+                f"Неизвестные аргументы: {' '.join(unknown)}",
+                title="Ошибка запуска",
+                border_style="red",
+            )
+        )
+        return 2
+
     router = build_router(console)
     try:
         router.run()
@@ -71,3 +108,4 @@ def main() -> None:
         console.print("\n[yellow]Launcher остановлен пользователем.[/yellow]")
     else:
         console.print("\n[dim]До встречи.[/dim]")
+    return 0

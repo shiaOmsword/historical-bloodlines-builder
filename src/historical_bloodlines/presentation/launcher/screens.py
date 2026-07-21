@@ -15,9 +15,15 @@ from historical_bloodlines.application.services.build_genealogy import (
     PageFormat,
 )
 from historical_bloodlines.config.settings import Settings
+from historical_bloodlines.presentation.file_dialogs import (
+    FileDialogError,
+    select_excel_file,
+    select_output_file,
+)
 from historical_bloodlines.presentation.launcher.components import (
     graphviz_status,
     open_in_file_manager,
+    open_path,
     render_header,
     render_menu,
     render_paths,
@@ -52,7 +58,7 @@ class MainScreen:
             (
                 ("1", "Собрать родословную", "Быстрый или настраиваемый запуск"),
                 ("2", "Конфигурация", "Пути по умолчанию и Graphviz"),
-                ("3", "Открыть результаты", "Открыть data/output в проводнике"),
+                ("3", "Открыть результаты", "Открыть папку в Документах"),
                 ("0", "Выход", "Завершить launcher"),
             ),
         )
@@ -132,23 +138,23 @@ class CustomBuildScreen:
         render_header(
             self._console,
             "Настройка сборки",
-            subtitle="Enter принимает значение по умолчанию",
+            subtitle="Файлы выбираются через стандартные окна Windows",
         )
 
         if not Confirm.ask(
-            "Перейти к настройке?",
+            "Выбрать Excel-файл?",
             default=True,
             console=self._console,
         ):
             return NavigationCommand.pop()
 
-        input_path = Path(
-            Prompt.ask(
-                "Путь к Excel",
-                default=str(self._settings.input_file),
-                console=self._console,
-            )
-        ).expanduser()
+        try:
+            input_path = select_excel_file(self._settings.input_file)
+        except FileDialogError as exc:
+            self._show_dialog_error(exc)
+            return NavigationCommand.pop()
+        if input_path is None:
+            return NavigationCommand.pop()
 
         output_format = Prompt.ask(
             "Формат результата",
@@ -158,16 +164,16 @@ class CustomBuildScreen:
         )
 
         default_output = self._settings.output_file.with_suffix(f".{output_format}")
-        output_path = Path(
-            Prompt.ask(
-                "Путь результата",
-                default=str(default_output),
-                console=self._console,
+        try:
+            output_path = select_output_file(
+                default_output,
+                output_format=output_format,
             )
-        ).expanduser()
-        expected_suffix = f".{output_format}"
-        if output_path.suffix.casefold() != expected_suffix:
-            output_path = output_path.with_suffix(expected_suffix)
+        except FileDialogError as exc:
+            self._show_dialog_error(exc)
+            return NavigationCommand.pop()
+        if output_path is None:
+            return NavigationCommand.pop()
 
         page_format = PageFormat.A5
         if output_format == "pdf":
@@ -209,6 +215,16 @@ class CustomBuildScreen:
     def _default_output_format(self) -> str:
         suffix = self._settings.output_file.suffix.casefold().removeprefix(".")
         return suffix if suffix in {"pdf", "svg", "png"} else "pdf"
+
+    def _show_dialog_error(self, error: Exception) -> None:
+        self._console.print(
+            Panel(
+                str(error),
+                title="Не удалось открыть окно выбора файла",
+                border_style="red",
+            )
+        )
+        wait_for_enter(self._console)
 
 
 class BuildResultScreen:
@@ -269,9 +285,7 @@ class BuildResultScreen:
         table.add_row("Создано", str(result.output_path))
         table.add_row("Предупреждения", str(len(result.warnings)))
 
-        self._console.print(
-            Panel(table, title="Готово", border_style="green")
-        )
+        self._console.print(Panel(table, title="Готово", border_style="green"))
         if result.warnings:
             warning_text = "\n".join(f"• {warning}" for warning in result.warnings)
             self._console.print(
@@ -282,7 +296,35 @@ class BuildResultScreen:
                 )
             )
 
-        wait_for_enter(self._console)
+        return self._result_actions(result.output_path)
+
+    def _result_actions(self, result_path: Path) -> NavigationCommand:
+        render_menu(
+            self._console,
+            (
+                ("1", "Открыть результат", "Открыть созданный файл или каталог"),
+                ("2", "Показать в папке", "Открыть Проводник рядом с результатом"),
+                ("0", "Назад", "Вернуться к выбору режима"),
+            ),
+        )
+        choice = Prompt.ask(
+            "[bold cyan]Что сделать дальше?[/bold cyan]",
+            choices=["1", "2", "0"],
+            default="1",
+            console=self._console,
+        )
+
+        try:
+            if choice == "1":
+                open_path(result_path)
+            elif choice == "2":
+                open_in_file_manager(result_path)
+        except Exception as exc:
+            self._console.print(
+                Panel(str(exc), title="Не удалось открыть результат", border_style="red")
+            )
+            wait_for_enter(self._console)
+
         return NavigationCommand.pop()
 
 
