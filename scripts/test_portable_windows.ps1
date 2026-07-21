@@ -22,7 +22,7 @@ if (-not (Test-Path (Join-Path $BuildDirectory "_internal\graphviz\bin\neato.exe
     throw "Bundled neato.exe is missing from the onedir build."
 }
 
-$PortableTestRoot = Join-Path $env:TEMP "Historical Bloodlines portable тест"
+$PortableTestRoot = Join-Path $env:TEMP "Historical Bloodlines portable test"
 if (Test-Path $PortableTestRoot) {
     Remove-Item $PortableTestRoot -Recurse -Force
 }

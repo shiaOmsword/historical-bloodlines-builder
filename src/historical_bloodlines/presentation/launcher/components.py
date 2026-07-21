@@ -14,7 +14,13 @@ from rich.table import Table
 from rich.text import Text
 
 
-MENU_WIDTH = 76
+MAX_MENU_WIDTH = 88
+
+
+def launcher_width(console: Console) -> int:
+    """Keep all launcher panels aligned and inside the current terminal."""
+    available = max(24, console.size.width - 2)
+    return min(MAX_MENU_WIDTH, available)
 
 
 def render_header(
@@ -23,7 +29,8 @@ def render_header(
     *,
     subtitle: str | None = None,
 ) -> None:
-    console.clear()
+    console.clear(home=True)
+    width = launcher_width(console)
     heading = Text("HISTORICAL BLOODLINES", style="bold white")
     caption = Text(title, style="bold cyan")
     content = Group(Align.center(heading), Align.center(caption))
@@ -32,7 +39,7 @@ def render_header(
             content,
             subtitle=subtitle,
             border_style="cyan",
-            width=MENU_WIDTH,
+            width=width,
         )
     )
 
@@ -41,20 +48,22 @@ def render_menu(
     console: Console,
     items: Iterable[tuple[str, str, str]],
 ) -> None:
+    width = launcher_width(console)
     table = Table(
         show_header=False,
         box=None,
         padding=(0, 1),
-        width=MENU_WIDTH - 2,
+        width=width - 2,
     )
     table.add_column("Key", justify="right", style="bold cyan", width=4)
-    table.add_column("Action", style="bold white", width=24)
+    action_width = min(24, max(14, width // 3))
+    table.add_column("Action", style="bold white", width=action_width)
     table.add_column("Description", style="dim")
 
     for key, label, description in items:
         table.add_row(key, label, description)
 
-    console.print(Panel(table, border_style="bright_black", width=MENU_WIDTH))
+    console.print(Panel(table, border_style="bright_black", width=width))
 
 
 def render_paths(
@@ -70,7 +79,14 @@ def render_paths(
     table.add_row("Excel", str(input_path))
     table.add_row("Результат", str(output_path))
     table.add_row("Формат страницы", page_format.upper())
-    console.print(Panel(table, title="Параметры сборки", border_style="cyan"))
+    console.print(
+        Panel(
+            table,
+            title="Параметры сборки",
+            border_style="cyan",
+            width=launcher_width(console),
+        )
+    )
 
 
 def wait_for_enter(console: Console) -> None:

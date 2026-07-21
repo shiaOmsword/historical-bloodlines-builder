@@ -22,6 +22,7 @@ from historical_bloodlines.presentation.file_dialogs import (
 )
 from historical_bloodlines.presentation.launcher.components import (
     graphviz_status,
+    launcher_width,
     open_in_file_manager,
     open_path,
     render_header,
@@ -285,7 +286,14 @@ class BuildResultScreen:
         table.add_row("Создано", str(result.output_path))
         table.add_row("Предупреждения", str(len(result.warnings)))
 
-        self._console.print(Panel(table, title="Готово", border_style="green"))
+        self._console.print(
+            Panel(
+                table,
+                title="Готово",
+                border_style="green",
+                width=launcher_width(self._console),
+            )
+        )
         if result.warnings:
             warning_text = "\n".join(f"• {warning}" for warning in result.warnings)
             self._console.print(
@@ -293,6 +301,7 @@ class BuildResultScreen:
                     warning_text,
                     title="Предупреждения",
                     border_style="yellow",
+                    width=launcher_width(self._console),
                 )
             )
 
@@ -353,7 +362,13 @@ class ConfigurationScreen:
         )
         table.add_row("Команды Graphviz", graphviz_details)
 
-        self._console.print(Panel(table, border_style="bright_black"))
+        self._console.print(
+            Panel(
+                table,
+                border_style="bright_black",
+                width=launcher_width(self._console),
+            )
+        )
         wait_for_enter(self._console)
         return NavigationCommand.pop()
 

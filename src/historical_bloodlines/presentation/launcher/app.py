@@ -29,6 +29,7 @@ from historical_bloodlines.presentation.launcher.screens import (
     require_build_options,
 )
 from historical_bloodlines.presentation.launcher.self_test import run_self_test
+from historical_bloodlines.presentation.launcher.terminal import prepare_terminal
 
 
 LAUNCHER_THEME = Theme(
@@ -41,8 +42,23 @@ LAUNCHER_THEME = Theme(
 )
 
 
+def create_console() -> Console:
+    terminal = prepare_terminal()
+    return Console(
+        theme=LAUNCHER_THEME,
+        safe_box=True,
+        emoji=False,
+        force_terminal=None if terminal.interactive else False,
+        legacy_windows=(
+            not terminal.virtual_terminal_enabled
+            if sys.platform == "win32" and terminal.interactive
+            else False
+        ),
+    )
+
+
 def build_router(console: Console | None = None) -> Router:
-    launcher_console = console or Console(theme=LAUNCHER_THEME)
+    launcher_console = console or create_console()
     settings = get_settings()
     build_genealogy = BuildGenealogyUseCase()
 
@@ -73,7 +89,7 @@ def build_router(console: Console | None = None) -> Router:
 
 def main(argv: Sequence[str] | None = None) -> int:
     arguments = tuple(sys.argv[1:] if argv is None else argv)
-    console = Console(theme=LAUNCHER_THEME)
+    console = create_console()
 
     try:
         prepare_bundled_graphviz()
