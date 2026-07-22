@@ -15,9 +15,10 @@ class PersonLabelFormatter:
     text_padding_x: float
     text_padding_y: float
     max_text_line: int
+    max_name_line: int | None = None
 
     def measure(self, person: Person) -> PersonBox:
-        name_lines = self.wrap(person.name)
+        name_lines = self.wrap_name(person.name)
         lines: list[str] = list(name_lines)
         for title in person.titles:
             lines.extend(self.wrap(title))
@@ -59,13 +60,50 @@ class PersonLabelFormatter:
             output_lines.append(escaped)
         return f"<{'<BR/>'.join(output_lines)}>"
 
+    def wrap_name(self, value: str) -> tuple[str, ...]:
+        """Wrap names a little earlier than titles and dates.
+
+        Dense generations are usually widened by long personal names rather
+        than by titles. A separate name width makes family components narrower
+        while preserving readable title lines. A short trailing parenthetical
+        such as ``(ум. 1483)`` is kept with the preceding surname whenever that
+        produces only a small controlled overflow.
+        """
+
+        width = self.max_name_line or self.max_text_line
+        normalized = " ".join(value.split())
+        if not normalized:
+            return ()
+
+        suffix = ""
+        base = normalized
+        if normalized.endswith(")") and " (" in normalized:
+            candidate_base, candidate_suffix = normalized.rsplit(" (", maxsplit=1)
+            candidate_suffix = f"({candidate_suffix}"
+            if 3 <= len(candidate_suffix) <= width:
+                base = candidate_base
+                suffix = candidate_suffix
+
+        lines = list(self._wrap_to_width(base, width))
+        if suffix:
+            combined = f"{lines[-1]} {suffix}"
+            if len(combined) <= width + 5:
+                lines[-1] = combined
+            else:
+                lines.append(suffix)
+        return tuple(lines)
+
     def wrap(self, value: str) -> tuple[str, ...]:
+        return self._wrap_to_width(value, self.max_text_line)
+
+    @staticmethod
+    def _wrap_to_width(value: str, width: int) -> tuple[str, ...]:
         value = " ".join(value.split())
         if not value:
             return ()
         wrapped = textwrap.wrap(
             value,
-            width=self.max_text_line,
+            width=width,
             break_long_words=False,
             break_on_hyphens=False,
         )

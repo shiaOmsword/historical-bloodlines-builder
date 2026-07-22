@@ -11,6 +11,7 @@ from historical_bloodlines.domain import (
     MarriageRelation,
     ParentChildRelation,
     Person,
+    PersonLayoutHint,
     ReferenceWarning,
     SourcePersonKey,
 )
@@ -122,6 +123,10 @@ class GenealogyAssembler:
                 dynasty=row.dynasty,
                 titles=row.titles,
                 reign_periods=row.reign_periods,
+                layout_hint=PersonLayoutHint(
+                    generation=row.layout_generation,
+                    order=row.layout_order,
+                ),
             )
             genealogy.add_person(person)
             source_to_person[row.source_key] = person

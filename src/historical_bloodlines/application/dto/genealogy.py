@@ -13,6 +13,8 @@ class RawGenealogyRowDTO:
     reign_end_raw: int | str | None
     children_raw: str | None
     spouses_raw: str | None
+    generation_raw: int | float | str | None = None
+    generation_order_raw: int | float | str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -39,3 +41,5 @@ class ParsedGenealogyRowDTO:
     reign_periods: tuple[ReignPeriod, ...]
     children: tuple[PersonReferenceDTO, ...]
     spouses: tuple[PersonReferenceDTO, ...]
+    layout_generation: int | None = None
+    layout_order: int | None = None

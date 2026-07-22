@@ -42,7 +42,7 @@ class GraphvizGenealogyRenderer:
     # selected landscape paper size, so wasted space only shrinks the text.
     PERSON_GAP = 38.0
     COMPONENT_GAP = 26.0
-    LAYER_GAP = 24.0
+    LAYER_GAP = 30.0
     PAGE_MARGIN_X = 22.0
     PAGE_MARGIN_Y = 16.0
     TITLE_AREA = 34.0
@@ -51,6 +51,7 @@ class GraphvizGenealogyRenderer:
     MIN_LANDSCAPE_RATIO = 1.4142
     MIN_PAGE_WIDTH = 760.0
     MAX_TEXT_LINE = 20
+    MAX_NAME_LINE = 16
     MAX_HORIZONTAL_STRETCH = 1.35
 
     def __init__(self) -> None:
@@ -60,6 +61,7 @@ class GraphvizGenealogyRenderer:
             text_padding_x=self.TEXT_PADDING_X,
             text_padding_y=self.TEXT_PADDING_Y,
             max_text_line=self.MAX_TEXT_LINE,
+            max_name_line=self.MAX_NAME_LINE,
         )
         self._layout = FixedGenealogyLayout(
             LayoutConfig(
@@ -265,7 +267,10 @@ class GraphvizGenealogyRenderer:
         for family in families:
             children = sorted(
                 family.child_ids,
-                key=lambda child_id: genealogy.persons[child_id].source_key.row_number,
+                key=lambda child_id: (
+                    person_positions[child_id].center_x,
+                    genealogy.persons[child_id].source_key.row_number,
+                ),
             )
             if not children:
                 continue

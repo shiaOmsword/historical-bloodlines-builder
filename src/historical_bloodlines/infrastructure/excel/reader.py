@@ -17,6 +17,10 @@ class ExcelGenealogyReader:
         "Дети": "children_raw",
         "Брак": "spouses_raw",
     }
+    OPTIONAL_HEADERS = {
+        "Поколение": "generation_raw",
+        "Порядок в поколении": "generation_order_raw",
+    }
     TITLE_HEADER = "Название"
 
     def read(self, path: Path) -> tuple[GenealogySheetDTO, ...]:
@@ -99,6 +103,14 @@ class ExcelGenealogyReader:
                     ),
                     children_raw=self._optional_text(values, header_index["Дети"]),
                     spouses_raw=self._optional_text(values, header_index["Брак"]),
+                    generation_raw=self._optional_value(
+                        values,
+                        header_index.get("Поколение"),
+                    ),
+                    generation_order_raw=self._optional_value(
+                        values,
+                        header_index.get("Порядок в поколении"),
+                    ),
                 )
             )
         return display_title, tuple(rows)
@@ -125,3 +137,13 @@ class ExcelGenealogyReader:
     def _optional_text(cls, values: tuple[object, ...], index: int) -> str | None:
         value = cls._value(values, index)
         return None if value in (None, "") else str(value)
+
+    @classmethod
+    def _optional_value(
+        cls,
+        values: tuple[object, ...],
+        index: int | None,
+    ) -> object | None:
+        if index is None:
+            return None
+        return cls._value(values, index)

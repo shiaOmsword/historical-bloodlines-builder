@@ -1,5 +1,6 @@
 from pathlib import Path
 
+import pytest
 from openpyxl import Workbook
 from pypdf import PdfReader
 
@@ -421,3 +422,109 @@ def test_graphviz_is_invoked_with_ascii_temporary_filename(
     assert invoked_filenames[0].isascii()
     final_output = rendered / "001_Династия_Комнинов.svg"
     assert final_output.is_file()
+
+
+def test_optional_generation_and_order_columns_control_layout(tmp_path: Path) -> None:
+    from historical_bloodlines.application.services.assembler import GenealogyAssembler
+    from historical_bloodlines.application.services.parser import GenealogyRowParser
+    from historical_bloodlines.infrastructure.excel import ExcelGenealogyReader
+    from historical_bloodlines.infrastructure.graph.renderer import GraphvizGenealogyRenderer
+
+    source = tmp_path / "input.xlsx"
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "Dynasty"
+    sheet.append([*HEADERS, "Поколение", "Порядок в поколении"])
+    sheet.append([1, "Root", None, None, None, "Right; Left", None, 1, 10])
+    # Workbook row order is intentionally opposite to the requested visual order.
+    sheet.append([2, "Right", None, None, None, None, None, 3, 20])
+    sheet.append([3, "Left", None, None, None, None, None, 3, 10])
+    workbook.save(source)
+
+    sheet_dto = ExcelGenealogyReader().read(source)[0]
+    parser = GenealogyRowParser()
+    genealogy = GenealogyAssembler().assemble(parser.parse(row) for row in sheet_dto.rows)
+
+    renderer = GraphvizGenealogyRenderer()
+    components, component_by_person = renderer._build_partner_components(genealogy)
+    families = renderer._build_families(genealogy, component_by_person, components)
+    component_graph = renderer._build_component_graph(
+        components,
+        families,
+        component_by_person,
+    )
+    centers, levels = renderer._place_components(
+        genealogy,
+        components,
+        component_graph,
+        component_by_person,
+        families,
+    )
+
+    people = {person.name: person for person in genealogy.persons.values()}
+    left_component = component_by_person[people["Left"].id]
+    right_component = component_by_person[people["Right"].id]
+
+    assert levels[left_component] == 2
+    assert levels[right_component] == 2
+    assert centers[left_component] < centers[right_component]
+
+
+def test_conflicting_generations_inside_partnership_are_rejected(tmp_path: Path) -> None:
+    from historical_bloodlines.application.services.assembler import GenealogyAssembler
+    from historical_bloodlines.application.services.parser import GenealogyRowParser
+    from historical_bloodlines.infrastructure.excel import ExcelGenealogyReader
+    from historical_bloodlines.infrastructure.graph.renderer import GraphvizGenealogyRenderer
+
+    source = tmp_path / "input.xlsx"
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "Dynasty"
+    sheet.append([*HEADERS, "Поколение", "Порядок в поколении"])
+    sheet.append([1, "First", None, None, None, None, "Second", 1, 10])
+    sheet.append([2, "Second", None, None, None, None, "First", 2, 20])
+    workbook.save(source)
+
+    sheet_dto = ExcelGenealogyReader().read(source)[0]
+    parser = GenealogyRowParser()
+    genealogy = GenealogyAssembler().assemble(parser.parse(row) for row in sheet_dto.rows)
+
+    with pytest.raises(ValueError, match="same generation"):
+        GraphvizGenealogyRenderer()._build_partner_components(genealogy)
+
+
+def test_child_cannot_be_forced_above_minimum_generation(tmp_path: Path) -> None:
+    from historical_bloodlines.application.services.assembler import GenealogyAssembler
+    from historical_bloodlines.application.services.parser import GenealogyRowParser
+    from historical_bloodlines.infrastructure.excel import ExcelGenealogyReader
+    from historical_bloodlines.infrastructure.graph.renderer import GraphvizGenealogyRenderer
+
+    source = tmp_path / "input.xlsx"
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "Dynasty"
+    sheet.append([*HEADERS, "Поколение", "Порядок в поколении"])
+    sheet.append([1, "Parent", None, None, None, "Child", None, 2, 10])
+    sheet.append([2, "Child", None, None, None, None, None, 2, 10])
+    workbook.save(source)
+
+    sheet_dto = ExcelGenealogyReader().read(source)[0]
+    parser = GenealogyRowParser()
+    genealogy = GenealogyAssembler().assemble(parser.parse(row) for row in sheet_dto.rows)
+    renderer = GraphvizGenealogyRenderer()
+    components, component_by_person = renderer._build_partner_components(genealogy)
+    families = renderer._build_families(genealogy, component_by_person, components)
+    component_graph = renderer._build_component_graph(
+        components,
+        families,
+        component_by_person,
+    )
+
+    with pytest.raises(ValueError, match="too early"):
+        renderer._place_components(
+            genealogy,
+            components,
+            component_graph,
+            component_by_person,
+            families,
+        )

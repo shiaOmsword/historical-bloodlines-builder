@@ -28,6 +28,16 @@ class GenealogyRowParser:
             ),
             children=self._parse_people(row.children_raw),
             spouses=self._parse_people(row.spouses_raw),
+            layout_generation=self._parse_positive_integer(
+                row.generation_raw,
+                field_name="Поколение",
+                row=row,
+            ),
+            layout_order=self._parse_positive_integer(
+                row.generation_order_raw,
+                field_name="Порядок в поколении",
+                row=row,
+            ),
         )
 
     @staticmethod
@@ -103,3 +113,33 @@ class GenealogyRowParser:
                     )
                 )
         return tuple(references)
+
+    @staticmethod
+    def _parse_positive_integer(
+        value: int | float | str | None,
+        *,
+        field_name: str,
+        row: RawGenealogyRowDTO,
+    ) -> int | None:
+        if value is None or value == "":
+            return None
+
+        parsed: int | None = None
+        if isinstance(value, bool):
+            parsed = None
+        elif isinstance(value, int):
+            parsed = value
+        elif isinstance(value, float):
+            if value.is_integer():
+                parsed = int(value)
+        else:
+            normalized = str(value).strip()
+            if normalized.isdigit():
+                parsed = int(normalized)
+
+        if parsed is None or parsed < 1:
+            raise ValueError(
+                f"{row.source_sheet}:{row.row_number}: {field_name} must be "
+                f"a positive integer, got {value!r}"
+            )
+        return parsed

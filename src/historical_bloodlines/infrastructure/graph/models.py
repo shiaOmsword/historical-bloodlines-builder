@@ -22,6 +22,8 @@ class PartnerComponent:
     width: float
     height: float
     min_source_row: int
+    generation_hint: int | None = None
+    order_hint: int | None = None
 
 
 @dataclass(frozen=True, slots=True)

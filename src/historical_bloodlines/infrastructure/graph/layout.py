@@ -74,6 +74,26 @@ class FixedGenealogyLayout:
         )
         for component_id, person_ids_set in enumerate(connected_components):
             ordered_ids = self._order_partner_component(genealogy, person_ids_set)
+            explicit_generations = {
+                genealogy.persons[person_id].layout_hint.generation
+                for person_id in ordered_ids
+                if genealogy.persons[person_id].layout_hint.generation is not None
+            }
+            if len(explicit_generations) > 1:
+                people = ", ".join(
+                    genealogy.persons[person_id].name for person_id in ordered_ids
+                )
+                values = ", ".join(str(item) for item in sorted(explicit_generations))
+                raise ValueError(
+                    "People in one partnership component must have the same "
+                    f"generation: {people} (got {values})"
+                )
+
+            explicit_orders = [
+                genealogy.persons[person_id].layout_hint.order
+                for person_id in ordered_ids
+                if genealogy.persons[person_id].layout_hint.order is not None
+            ]
             boxes = {
                 person_id: self._person_box(genealogy.persons[person_id])
                 for person_id in ordered_ids
@@ -101,6 +121,12 @@ class FixedGenealogyLayout:
                     genealogy.persons[person_id].source_key.row_number
                     for person_id in ordered_ids
                 ),
+                generation_hint=(
+                    next(iter(explicit_generations)) - 1
+                    if explicit_generations
+                    else None
+                ),
+                order_hint=min(explicit_orders) if explicit_orders else None,
             )
             components[component_id] = component
             for person_id in ordered_ids:
@@ -236,15 +262,36 @@ class FixedGenealogyLayout:
         levels: dict[int, int] = {}
         for component_id in nx.topological_sort(component_graph):
             predecessors = tuple(component_graph.predecessors(component_id))
-            levels[component_id] = (
+            minimum_level = (
                 max(levels[parent_id] for parent_id in predecessors) + 1
                 if predecessors
                 else 0
             )
+            manual_level = components[component_id].generation_hint
+            if manual_level is not None and manual_level < minimum_level:
+                people = ", ".join(
+                    genealogy.persons[person_id].name
+                    for person_id in components[component_id].person_ids
+                )
+                raise ValueError(
+                    f"Generation {manual_level + 1} for {people} is too early; "
+                    f"minimum allowed generation is {minimum_level + 1}"
+                )
+            levels[component_id] = (
+                manual_level if manual_level is not None else minimum_level
+            )
         for component_id in components:
             levels.setdefault(component_id, 0)
 
-        if max((degree for _, degree in component_graph.in_degree()), default=0) <= 1:
+        manual_layout_requested = any(
+            component.generation_hint is not None or component.order_hint is not None
+            for component in components.values()
+        )
+
+        if (
+            not manual_layout_requested
+            and max((degree for _, degree in component_graph.in_degree()), default=0) <= 1
+        ):
             tree_centers = self._place_tree_components(
                 genealogy,
                 components,
@@ -268,6 +315,9 @@ class FixedGenealogyLayout:
             by_level[level].append(component_id)
         for component_ids in by_level.values():
             component_ids.sort(key=lambda item: components[item].min_source_row)
+            self._apply_manual_component_order(component_ids, components)
+
+        self._validate_manual_orders(by_level, components, genealogy)
 
         max_level = max(by_level, default=0)
 
@@ -289,6 +339,7 @@ class FixedGenealogyLayout:
                     components[component_id].min_source_row,
                 )
             )
+            self._apply_manual_component_order(by_level[level], components)
             for index, component_id in enumerate(by_level[level]):
                 order_index[component_id] = index
 
@@ -316,7 +367,11 @@ class FixedGenealogyLayout:
             parent_component_id = family.parent_component_id
             ordered_children = sorted(
                 family.child_ids,
-                key=lambda child_id: genealogy.persons[child_id].source_key.row_number,
+                key=lambda child_id: (
+                    levels.get(component_by_person[child_id], 0),
+                    order_index.get(component_by_person[child_id], math.inf),
+                    genealogy.persons[child_id].source_key.row_number,
+                ),
             )
             child_items: list[tuple[UUID, int, float]] = []
             seen_components: set[int] = set()
@@ -417,7 +472,11 @@ class FixedGenealogyLayout:
                 child_id
                 for child_id in sorted(
                     family.child_ids,
-                    key=lambda child_id: genealogy.persons[child_id].source_key.row_number,
+                    key=lambda child_id: (
+                        genealogy.persons[child_id].layout_hint.order is None,
+                        genealogy.persons[child_id].layout_hint.order or math.inf,
+                        genealogy.persons[child_id].source_key.row_number,
+                    ),
                 )
                 if component_by_person[child_id] != family.parent_component_id
             ]
@@ -745,6 +804,69 @@ class FixedGenealogyLayout:
         values = [order_index[item] for item in neighbors if item in order_index]
         return sum(values) / len(values) if values else math.inf
 
+    @staticmethod
+    def _apply_manual_component_order(
+        ordered_ids: list[int],
+        components: dict[int, PartnerComponent],
+    ) -> None:
+        """Apply manual order as a partial constraint.
+
+        Unnumbered components keep their automatic positions. Numbered
+        components are reordered only among the slots already occupied by
+        numbered components. Therefore one or two optional hints do not drag all
+        automatic branches to an arbitrary side, while a fully numbered layer
+        receives an exact left-to-right order.
+        """
+
+        manual_slots = [
+            index
+            for index, component_id in enumerate(ordered_ids)
+            if components[component_id].order_hint is not None
+        ]
+        manual_ids = sorted(
+            (ordered_ids[index] for index in manual_slots),
+            key=lambda component_id: (
+                components[component_id].order_hint,
+                components[component_id].min_source_row,
+            ),
+        )
+        for index, component_id in zip(manual_slots, manual_ids):
+            ordered_ids[index] = component_id
+
+    @staticmethod
+    def _validate_manual_orders(
+        by_level: dict[int, list[int]],
+        components: dict[int, PartnerComponent],
+        genealogy: Genealogy,
+    ) -> None:
+        for level, component_ids in by_level.items():
+            by_order: dict[int, list[int]] = defaultdict(list)
+            for component_id in component_ids:
+                order = components[component_id].order_hint
+                if order is not None:
+                    by_order[order].append(component_id)
+
+            duplicates = {
+                order: ids for order, ids in by_order.items() if len(ids) > 1
+            }
+            if not duplicates:
+                continue
+
+            details: list[str] = []
+            for order, ids in sorted(duplicates.items()):
+                names = [
+                    "/".join(
+                        genealogy.persons[person_id].name
+                        for person_id in components[component_id].person_ids
+                    )
+                    for component_id in ids
+                ]
+                details.append(f"{order}: {', '.join(names)}")
+            raise ValueError(
+                f"Duplicate order values in generation {level + 1}: "
+                + "; ".join(details)
+            )
+
     def _pack_layer(
         self,
         ordered_ids: list[int],
@@ -898,6 +1020,23 @@ class FixedGenealogyLayout:
                 ),
             )
         )
+        manually_ordered = list(source_order)
+        manual_slots = [
+            index
+            for index, person_id in enumerate(manually_ordered)
+            if genealogy.persons[person_id].layout_hint.order is not None
+        ]
+        manual_ids = sorted(
+            (manually_ordered[index] for index in manual_slots),
+            key=lambda person_id: (
+                genealogy.persons[person_id].layout_hint.order,
+                genealogy.persons[person_id].source_key.row_number,
+            ),
+        )
+        for index, person_id in zip(manual_slots, manual_ids):
+            manually_ordered[index] = person_id
+        source_order = tuple(manually_ordered)
+
         if len(source_order) <= 2 or len(source_order) > 7:
             return source_order
 
@@ -908,8 +1047,25 @@ class FixedGenealogyLayout:
         }
         source_index = {person_id: index for index, person_id in enumerate(source_order)}
 
-        def score(order: tuple[UUID, ...]) -> tuple[int, int, tuple[int, ...]]:
+        manual_people = [
+            person_id
+            for person_id in source_order
+            if genealogy.persons[person_id].layout_hint.order is not None
+        ]
+        manual_pairs = [
+            (left_id, right_id)
+            for left_index, left_id in enumerate(manual_people)
+            for right_id in manual_people[left_index + 1 :]
+            if genealogy.persons[left_id].layout_hint.order
+            < genealogy.persons[right_id].layout_hint.order
+        ]
+
+        def score(order: tuple[UUID, ...]) -> tuple[int, int, int, tuple[int, ...]]:
             index = {person_id: position for position, person_id in enumerate(order)}
+            manual_violations = sum(
+                index[left_id] > index[right_id]
+                for left_id, right_id in manual_pairs
+            )
             marriage_span = 0
             for pair in edges:
                 a, b = tuple(pair)
@@ -919,7 +1075,7 @@ class FixedGenealogyLayout:
                 for person_id in order
             )
             lexical = tuple(source_index[person_id] for person_id in order)
-            return marriage_span, displacement, lexical
+            return manual_violations, marriage_span, displacement, lexical
 
         return min(permutations(source_order), key=score)
 

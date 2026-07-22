@@ -50,6 +50,25 @@ class ReferenceWarning:
         )
 
 
+@dataclass(frozen=True, slots=True)
+class PersonLayoutHint:
+    """Optional user-provided constraints for the visual layout.
+
+    ``generation`` is one-based in Excel because that is the natural notation
+    for editors. ``order`` is only a relative left-to-right priority; it is not
+    an absolute x-coordinate.
+    """
+
+    generation: int | None = None
+    order: int | None = None
+
+    def __post_init__(self) -> None:
+        if self.generation is not None and self.generation < 1:
+            raise ValueError("Layout generation must be a positive integer")
+        if self.order is not None and self.order < 1:
+            raise ValueError("Layout order must be a positive integer")
+
+
 @dataclass(slots=True)
 class Person:
     id: UUID
@@ -59,6 +78,7 @@ class Person:
     titles: tuple[str, ...] = ()
     reign_periods: tuple[ReignPeriod, ...] = ()
     is_placeholder: bool = False
+    layout_hint: PersonLayoutHint = field(default_factory=PersonLayoutHint)
 
     @classmethod
     def create(
@@ -70,6 +90,7 @@ class Person:
         titles: tuple[str, ...] = (),
         reign_periods: tuple[ReignPeriod, ...] = (),
         is_placeholder: bool = False,
+        layout_hint: PersonLayoutHint | None = None,
     ) -> Person:
         normalized_name = " ".join(name.split())
         if not normalized_name:
@@ -82,6 +103,7 @@ class Person:
             titles=titles,
             reign_periods=reign_periods,
             is_placeholder=is_placeholder,
+            layout_hint=layout_hint or PersonLayoutHint(),
         )
 
 
