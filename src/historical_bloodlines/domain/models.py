@@ -9,6 +9,20 @@ from uuid import UUID, uuid5
 PERSON_ID_NAMESPACE = UUID("0a8bce4f-23b7-4b48-a479-c3d15f2822db")
 
 
+def normalize_title(value: str) -> str:
+    """Normalize title whitespace and make its first cased letter lowercase.
+
+    Only the first cased character is changed. This keeps proper names inside
+    a title intact, for example ``Король Англии`` becomes ``король Англии``.
+    """
+
+    normalized = " ".join(str(value).split())
+    for index, character in enumerate(normalized):
+        if character.lower() != character.upper():
+            return f"{normalized[:index]}{character.lower()}{normalized[index + 1:]}"
+    return normalized
+
+
 @dataclass(frozen=True, slots=True)
 class SourcePersonKey:
     sheet_name: str
@@ -28,10 +42,10 @@ class SourcePersonKey:
 @dataclass(frozen=True, slots=True)
 class ReignPeriod:
     start_year: int
-    end_year: int
+    end_year: int | None = None
 
     def __post_init__(self) -> None:
-        if self.start_year > self.end_year:
+        if self.end_year is not None and self.start_year > self.end_year:
             raise ValueError("Reign start year cannot be later than end year")
 
 
@@ -101,7 +115,11 @@ class Person:
             source_key=source_key,
             name=normalized_name,
             dynasty=dynasty.strip() if dynasty else None,
-            titles=titles,
+            titles=tuple(
+                normalized_title
+                for title in titles
+                if (normalized_title := normalize_title(title))
+            ),
             reign_periods=reign_periods,
             is_placeholder=is_placeholder,
             layout_hint=layout_hint or PersonLayoutHint(),

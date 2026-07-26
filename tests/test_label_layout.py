@@ -1,5 +1,6 @@
 from historical_bloodlines.infrastructure.graph.labels import PersonLabelFormatter
 from historical_bloodlines.infrastructure.graph.renderer import GraphvizGenealogyRenderer
+from historical_bloodlines.domain import Person, ReignPeriod, SourcePersonKey
 
 
 def formatter() -> PersonLabelFormatter:
@@ -37,6 +38,31 @@ def test_trailing_life_note_stays_with_surname() -> None:
 
 def test_renderer_keeps_extra_vertical_air_between_generations() -> None:
     assert GraphvizGenealogyRenderer.LAYER_GAP == 30.0
+
+
+def test_titles_and_reign_dates_use_one_consistent_parenthetical_format() -> None:
+    labels = formatter()
+    person = Person.create(
+        source_key=SourcePersonKey("Dynasty", 1),
+        name="Оттон I",
+        titles=("Король", "Император"),
+        reign_periods=(ReignPeriod(936, 973), ReignPeriod(962)),
+    )
+
+    box = labels.measure(person)
+
+    assert person.titles == ("король", "император")
+    assert box.lines == (
+        "Оттон I",
+        "(король 936-973,",
+        "император с 962)",
+    )
+
+
+def test_marriage_connector_is_drawn_as_equals_sign() -> None:
+    renderer = GraphvizGenealogyRenderer()
+
+    assert renderer._marriage_line_ys(100.0) == (98.0, 102.0)
 
 
 def test_child_drop_detours_around_unrelated_person_box() -> None:

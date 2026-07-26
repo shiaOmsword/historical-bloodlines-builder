@@ -51,6 +51,38 @@ def test_excel_to_multi_page_pdf(tmp_path: Path) -> None:
     assert warnings == ()
 
 
+def test_parser_normalizes_titles_and_supports_open_ended_reigns(tmp_path: Path) -> None:
+    from historical_bloodlines.application.services.parser import GenealogyRowParser
+    from historical_bloodlines.infrastructure.excel import ExcelGenealogyReader
+
+    source = tmp_path / "input.xlsx"
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "Dynasty"
+    sheet.append(HEADERS)
+    sheet.append(
+        [
+            1,
+            "Otto I",
+            "Король; Император",
+            "936; 962",
+            "973;",
+            None,
+            None,
+        ]
+    )
+    workbook.save(source)
+
+    raw_row = ExcelGenealogyReader().read(source)[0].rows[0]
+    parsed = GenealogyRowParser().parse(raw_row)
+
+    assert parsed.titles == ("король", "император")
+    assert tuple(
+        (period.start_year, period.end_year)
+        for period in parsed.reign_periods
+    ) == ((936, 973), (962, None))
+
+
 def test_pdf_can_be_rendered_as_a4(tmp_path: Path) -> None:
     source = tmp_path / "input.xlsx"
     output = tmp_path / "tree_a4.pdf"

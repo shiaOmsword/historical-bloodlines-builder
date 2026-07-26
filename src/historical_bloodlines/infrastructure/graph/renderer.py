@@ -47,6 +47,7 @@ class GraphvizGenealogyRenderer:
     PAGE_MARGIN_Y = 16.0
     TITLE_AREA = 34.0
     LINE_WIDTH = 1.0
+    MARRIAGE_LINE_GAP = 4.0
     SINGLE_CHILD_SNAP_MAX = 18.0
     MIN_LANDSCAPE_RATIO = 1.4142
     MIN_PAGE_WIDTH = 760.0
@@ -252,6 +253,7 @@ class GraphvizGenealogyRenderer:
             name_y_a = pos_a.top_y + self.LINE_HEIGHT * 0.58
             name_y_b = pos_b.top_y + self.LINE_HEIGHT * 0.58
             line_y = (name_y_a + name_y_b) / 2
+            upper_line_y, lower_line_y = self._marriage_line_ys(line_y)
             left_x = pos_a.right + 5.0
             right_x = pos_b.left - 5.0
             if right_x < left_x:
@@ -269,8 +271,11 @@ class GraphvizGenealogyRenderer:
                         source_x = only_child_x
                 junction_xs.append(source_x)
 
-            horizontal_bus(line_y, junction_xs)
-            marriage_connectors[pair] = (left_x, right_x, line_y)
+            # Two parallel strokes form the conventional genealogical "="
+            # marriage sign. Descendant branches join the lower stroke.
+            horizontal_bus(upper_line_y, [left_x, right_x])
+            horizontal_bus(lower_line_y, junction_xs)
+            marriage_connectors[pair] = (left_x, right_x, lower_line_y)
 
         # Parent-child connectors. Every connector is built from separate exact
         # horizontal/vertical segments, so Graphviz cannot curve or loop it.
@@ -673,6 +678,11 @@ class GraphvizGenealogyRenderer:
 
     def _wrap(self, value: str) -> tuple[str, ...]:
         return self._labels.wrap(value)
+
+    @classmethod
+    def _marriage_line_ys(cls, center_y: float) -> tuple[float, float]:
+        half_gap = cls.MARRIAGE_LINE_GAP / 2
+        return center_y - half_gap, center_y + half_gap
 
     @staticmethod
     def _partnership_pairs(genealogy: Genealogy) -> set[frozenset[UUID]]:

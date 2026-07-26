@@ -8,6 +8,7 @@ from historical_bloodlines.domain.models import (
     ReferenceWarning,
     ReignPeriod,
     SourcePersonKey,
+    normalize_title,
 )
 
 __all__ = [
@@ -20,4 +21,5 @@ __all__ = [
     "ReferenceWarning",
     "ReignPeriod",
     "SourcePersonKey",
+    "normalize_title",
 ]

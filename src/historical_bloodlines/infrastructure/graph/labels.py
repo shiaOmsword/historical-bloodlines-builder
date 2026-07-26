@@ -19,15 +19,7 @@ class PersonLabelFormatter:
 
     def measure(self, person: Person) -> PersonBox:
         name_lines = self.wrap_name(person.name)
-        lines: list[str] = list(name_lines)
-        for title in person.titles:
-            lines.extend(self.wrap(title))
-        if person.reign_periods:
-            periods = ", ".join(
-                f"{period.start_year}-{period.end_year}"
-                for period in person.reign_periods
-            )
-            lines.extend(self.wrap(f"({periods})"))
+        lines = [*name_lines, *self._title_and_reign_lines(person)]
 
         max_chars = max((len(line) for line in lines), default=1)
         # Conservative Sans estimate. It intentionally slightly overestimates
@@ -59,6 +51,31 @@ class PersonLabelFormatter:
                 escaped = f"<B>{escaped}</B>"
             output_lines.append(escaped)
         return f"<{'<BR/>'.join(output_lines)}>"
+
+    def _title_and_reign_lines(self, person: Person) -> tuple[str, ...]:
+        if not person.reign_periods:
+            return tuple(
+                line
+                for title in person.titles
+                for line in self.wrap(title)
+            )
+
+        items: list[str] = []
+        item_count = max(len(person.titles), len(person.reign_periods))
+        for index in range(item_count):
+            title = person.titles[index] if index < len(person.titles) else ""
+            if index < len(person.reign_periods):
+                period = person.reign_periods[index]
+                dates = (
+                    f"{period.start_year}-{period.end_year}"
+                    if period.end_year is not None
+                    else f"с {period.start_year}"
+                )
+                items.append(" ".join(part for part in (title, dates) if part))
+            elif title:
+                items.append(title)
+
+        return self.wrap(f"({', '.join(items)})")
 
     def wrap_name(self, value: str) -> tuple[str, ...]:
         """Wrap names a little earlier than titles and dates.
