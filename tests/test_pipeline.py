@@ -470,7 +470,9 @@ def test_optional_generation_and_order_columns_control_layout(tmp_path: Path) ->
     assert centers[left_component] < centers[right_component]
 
 
-def test_conflicting_generations_inside_partnership_are_rejected(tmp_path: Path) -> None:
+def test_partners_from_different_generations_use_deepest_visual_row(
+    tmp_path: Path,
+) -> None:
     from historical_bloodlines.application.services.assembler import GenealogyAssembler
     from historical_bloodlines.application.services.parser import GenealogyRowParser
     from historical_bloodlines.infrastructure.excel import ExcelGenealogyReader
@@ -481,16 +483,21 @@ def test_conflicting_generations_inside_partnership_are_rejected(tmp_path: Path)
     sheet = workbook.active
     sheet.title = "Dynasty"
     sheet.append([*HEADERS, "Поколение", "Порядок в поколении"])
-    sheet.append([1, "First", None, None, None, None, "Second", 1, 10])
-    sheet.append([2, "Second", None, None, None, None, "First", 2, 20])
+    sheet.append([1, "Older branch partner", None, None, None, None, "Deeper branch partner", 3, 10])
+    sheet.append([2, "Deeper branch partner", None, None, None, None, "Older branch partner", 5, 20])
     workbook.save(source)
 
     sheet_dto = ExcelGenealogyReader().read(source)[0]
     parser = GenealogyRowParser()
     genealogy = GenealogyAssembler().assemble(parser.parse(row) for row in sheet_dto.rows)
+    renderer = GraphvizGenealogyRenderer()
 
-    with pytest.raises(ValueError, match="same generation"):
-        GraphvizGenealogyRenderer()._build_partner_components(genealogy)
+    components, _ = renderer._build_partner_components(genealogy)
+
+    assert len(components) == 1
+    component = next(iter(components.values()))
+    assert component.generation_hint == 4
+    assert component.order_hint == 20
 
 
 def test_child_cannot_be_forced_above_minimum_generation(tmp_path: Path) -> None:
@@ -528,3 +535,28 @@ def test_child_cannot_be_forced_above_minimum_generation(tmp_path: Path) -> None
             component_by_person,
             families,
         )
+
+
+def test_duplicate_source_numbers_report_exact_excel_cells(tmp_path: Path) -> None:
+    from historical_bloodlines.infrastructure.excel import ExcelGenealogyReader
+
+    source = tmp_path / "duplicate_numbers.xlsx"
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "Dynasty"
+    sheet.append(["Название", "Test genealogy"])
+    sheet.append(HEADERS)
+    sheet.append([6, "First person", None, None, None, None, None])
+    sheet.append([7, "Middle person", None, None, None, None, None])
+    sheet.append([6, "Second person", None, None, None, None, None])
+    workbook.save(source)
+
+    with pytest.raises(ValueError) as error:
+        ExcelGenealogyReader().read(source)
+
+    message = str(error.value)
+    assert "повторяющийся № 6" in message
+    assert "A3" in message
+    assert "First person" in message
+    assert "A5" in message
+    assert "Second person" in message

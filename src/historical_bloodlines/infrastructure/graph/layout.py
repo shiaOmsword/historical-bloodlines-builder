@@ -79,20 +79,30 @@ class FixedGenealogyLayout:
                 for person_id in ordered_ids
                 if genealogy.persons[person_id].layout_hint.generation is not None
             }
-            if len(explicit_generations) > 1:
-                people = ", ".join(
-                    genealogy.persons[person_id].name for person_id in ordered_ids
-                )
-                values = ", ".join(str(item) for item in sorted(explicit_generations))
-                raise ValueError(
-                    "People in one partnership component must have the same "
-                    f"generation: {people} (got {values})"
-                )
+
+            # Spouses can belong to different genealogical generations. This is
+            # common when distant branches of a dynasty converge again: for
+            # example, Anne Mortimer is several descent steps below Edward III,
+            # while Richard of Conisburgh belongs to a shorter branch. A
+            # partnership must still be rendered on one horizontal row, so the
+            # whole component uses the deepest explicitly requested generation.
+            # The later minimum-level validation also makes sure that this row is
+            # below every known parent of every partner.
+            component_generation = (
+                max(explicit_generations) - 1 if explicit_generations else None
+            )
 
             explicit_orders = [
                 genealogy.persons[person_id].layout_hint.order
                 for person_id in ordered_ids
                 if genealogy.persons[person_id].layout_hint.order is not None
+            ]
+            deepest_generation_orders = [
+                person.layout_hint.order
+                for person_id in ordered_ids
+                if (person := genealogy.persons[person_id]).layout_hint.generation
+                == (max(explicit_generations) if explicit_generations else None)
+                and person.layout_hint.order is not None
             ]
             boxes = {
                 person_id: self._person_box(genealogy.persons[person_id])
@@ -121,12 +131,16 @@ class FixedGenealogyLayout:
                     genealogy.persons[person_id].source_key.row_number
                     for person_id in ordered_ids
                 ),
-                generation_hint=(
-                    next(iter(explicit_generations)) - 1
-                    if explicit_generations
-                    else None
+                generation_hint=component_generation,
+                # In a cross-generation marriage the component is drawn on the
+                # deepest partner's row. Therefore that row's order hint must
+                # control the whole block; an older partner's order belongs to
+                # another genealogical row and must not create a false duplicate.
+                order_hint=(
+                    min(deepest_generation_orders)
+                    if deepest_generation_orders
+                    else min(explicit_orders) if explicit_orders else None
                 ),
-                order_hint=min(explicit_orders) if explicit_orders else None,
             )
             components[component_id] = component
             for person_id in ordered_ids:

@@ -54,6 +54,16 @@ class GraphvizGenealogyRenderer:
     MAX_NAME_LINE = 16
     MAX_HORIZONTAL_STRETCH = 1.35
 
+    # Transit parent-child lines must not run through an unrelated label.  The
+    # layout keeps person boxes apart, but a long vertical drop can still pass
+    # through a box belonging to another branch (for example Edmund of York ->
+    # Richard of Cambridge crossing Owen Tudor).  These clearances define a
+    # protected rectangle around every label and a short approach lane above
+    # the actual child.
+    CONNECTOR_CLEARANCE_X = 8.0
+    CONNECTOR_CLEARANCE_Y = 5.0
+    CONNECTOR_APPROACH_GAP = 9.0
+
     def __init__(self) -> None:
         self._labels = PersonLabelFormatter(
             font_size=self.FONT_SIZE,
@@ -312,20 +322,38 @@ class GraphvizGenealogyRenderer:
             available = max(14.0, child_top - source_y)
             bar_y = source_y + min(max(10.0, available * 0.34), 20.0)
 
+            child_routes = [
+                self._route_child_drop(
+                    child_id=child_id,
+                    bus_y=bar_y,
+                    person_positions=person_positions,
+                )
+                for child_id in children
+            ]
+
             if len(children) == 1:
+                connection_x, routed_segments = child_routes[0]
                 child_x = child_xs[0]
-                if math.isclose(source_x, child_x, abs_tol=2.0):
+                if (
+                    math.isclose(source_x, child_x, abs_tol=2.0)
+                    and math.isclose(connection_x, child_x, abs_tol=0.05)
+                ):
                     segment(source_x, source_y, child_x, child_top)
                 else:
                     segment(source_x, source_y, source_x, bar_y)
-                    segment(source_x, bar_y, child_x, bar_y)
-                    segment(child_x, bar_y, child_x, child_top)
+                    horizontal_bus(bar_y, [source_x, connection_x])
+                    for x1, y1, x2, y2 in routed_segments:
+                        segment(x1, y1, x2, y2)
                 continue
 
             segment(source_x, source_y, source_x, bar_y)
-            horizontal_bus(bar_y, [source_x, *child_xs])
-            for child_x, top_y in zip(child_xs, child_tops):
-                segment(child_x, bar_y, child_x, top_y)
+            horizontal_bus(
+                bar_y,
+                [source_x, *(connection_x for connection_x, _ in child_routes)],
+            )
+            for _, routed_segments in child_routes:
+                for x1, y1, x2, y2 in routed_segments:
+                    segment(x1, y1, x2, y2)
 
         # Graphviz for Windows still opens input files through APIs that may
         # reject non-ASCII filenames. Render under a private ASCII-only stem
@@ -353,6 +381,203 @@ class GraphvizGenealogyRenderer:
             (left_x, y, right_x, y)
             for left_x, right_x in pairwise(ordered_xs)
         )
+
+    def _route_child_drop(
+        self,
+        *,
+        child_id: UUID,
+        bus_y: float,
+        person_positions: dict[UUID, PersonPosition],
+    ) -> tuple[float, tuple[tuple[float, float, float, float], ...]]:
+        """Return a collision-free drop from a family bus to one child.
+
+        The first result is the x-coordinate at which the horizontal family
+        bus must expose a junction.  Most children use their own centre x and
+        therefore keep the old one-segment vertical drop.  When that vertical
+        would cross an unrelated label, the route moves to the nearest free
+        vertical corridor and approaches the child horizontally in the empty
+        lane immediately above its box.
+        """
+
+        child_position = person_positions[child_id]
+        child_x = child_position.center_x
+        child_top = child_position.top_y
+        ignored_ids = {child_id}
+
+        if not self._vertical_segment_hits_person_box(
+            child_x,
+            bus_y,
+            child_top,
+            person_positions,
+            ignored_ids=ignored_ids,
+        ):
+            return child_x, ((child_x, bus_y, child_x, child_top),)
+
+        approach_y = max(bus_y, child_top - self.CONNECTOR_APPROACH_GAP)
+        detour_x = self._nearest_free_vertical_corridor(
+            preferred_x=child_x,
+            y1=bus_y,
+            y2=approach_y,
+            person_positions=person_positions,
+            ignored_ids=ignored_ids,
+        )
+
+        # The approach lane normally lies between generations and therefore is
+        # clear.  Search upward in the unlikely case that another tall label
+        # reaches into it.  The child itself is intentionally ignored because
+        # the short final vertical segment must terminate at that box.
+        approach_y = self._nearest_free_horizontal_lane(
+            preferred_y=approach_y,
+            x1=detour_x,
+            x2=child_x,
+            lower_bound=bus_y,
+            person_positions=person_positions,
+            ignored_ids=ignored_ids,
+        )
+
+        return detour_x, (
+            (detour_x, bus_y, detour_x, approach_y),
+            (detour_x, approach_y, child_x, approach_y),
+            (child_x, approach_y, child_x, child_top),
+        )
+
+    def _nearest_free_vertical_corridor(
+        self,
+        *,
+        preferred_x: float,
+        y1: float,
+        y2: float,
+        person_positions: dict[UUID, PersonPosition],
+        ignored_ids: set[UUID],
+    ) -> float:
+        candidates = {preferred_x}
+        span_top, span_bottom = sorted((y1, y2))
+
+        for person_id, position in person_positions.items():
+            if person_id in ignored_ids:
+                continue
+            box_top = position.top_y - self.CONNECTOR_CLEARANCE_Y
+            box_bottom = position.bottom + self.CONNECTOR_CLEARANCE_Y
+            if span_bottom < box_top or span_top > box_bottom:
+                continue
+            candidates.add(position.left - self.CONNECTOR_CLEARANCE_X)
+            candidates.add(position.right + self.CONNECTOR_CLEARANCE_X)
+
+        ordered = sorted(
+            candidates,
+            key=lambda candidate: (
+                abs(candidate - preferred_x),
+                candidate > preferred_x,
+                candidate,
+            ),
+        )
+        for candidate in ordered:
+            if not self._vertical_segment_hits_person_box(
+                candidate,
+                y1,
+                y2,
+                person_positions,
+                ignored_ids=ignored_ids,
+            ):
+                return candidate
+
+        # Every protected box contributes both outer edges, so a free corridor
+        # should always exist.  This fallback keeps rendering deterministic if
+        # future layout constraints produce a pathological wall of labels.
+        return min(candidates) - self.CONNECTOR_CLEARANCE_X
+
+    def _nearest_free_horizontal_lane(
+        self,
+        *,
+        preferred_y: float,
+        x1: float,
+        x2: float,
+        lower_bound: float,
+        person_positions: dict[UUID, PersonPosition],
+        ignored_ids: set[UUID],
+    ) -> float:
+        if not self._horizontal_segment_hits_person_box(
+            x1,
+            x2,
+            preferred_y,
+            person_positions,
+            ignored_ids=ignored_ids,
+        ):
+            return preferred_y
+
+        candidates = {preferred_y, lower_bound}
+        segment_left, segment_right = sorted((x1, x2))
+        for person_id, position in person_positions.items():
+            if person_id in ignored_ids:
+                continue
+            box_left = position.left - self.CONNECTOR_CLEARANCE_X
+            box_right = position.right + self.CONNECTOR_CLEARANCE_X
+            if segment_right < box_left or segment_left > box_right:
+                continue
+            candidates.add(position.top_y - self.CONNECTOR_CLEARANCE_Y)
+            candidates.add(position.bottom + self.CONNECTOR_CLEARANCE_Y)
+
+        valid = [
+            candidate
+            for candidate in candidates
+            if lower_bound <= candidate <= preferred_y
+            and not self._horizontal_segment_hits_person_box(
+                x1,
+                x2,
+                candidate,
+                person_positions,
+                ignored_ids=ignored_ids,
+            )
+        ]
+        if valid:
+            return min(valid, key=lambda candidate: abs(candidate - preferred_y))
+        return lower_bound
+
+    def _vertical_segment_hits_person_box(
+        self,
+        x: float,
+        y1: float,
+        y2: float,
+        person_positions: dict[UUID, PersonPosition],
+        *,
+        ignored_ids: set[UUID],
+    ) -> bool:
+        segment_top, segment_bottom = sorted((y1, y2))
+        for person_id, position in person_positions.items():
+            if person_id in ignored_ids:
+                continue
+            left = position.left - self.CONNECTOR_CLEARANCE_X
+            right = position.right + self.CONNECTOR_CLEARANCE_X
+            top = position.top_y - self.CONNECTOR_CLEARANCE_Y
+            bottom = position.bottom + self.CONNECTOR_CLEARANCE_Y
+            if left < x < right and not (
+                segment_bottom <= top or segment_top >= bottom
+            ):
+                return True
+        return False
+
+    def _horizontal_segment_hits_person_box(
+        self,
+        x1: float,
+        x2: float,
+        y: float,
+        person_positions: dict[UUID, PersonPosition],
+        *,
+        ignored_ids: set[UUID],
+    ) -> bool:
+        segment_left, segment_right = sorted((x1, x2))
+        for person_id, position in person_positions.items():
+            if person_id in ignored_ids:
+                continue
+            left = position.left - self.CONNECTOR_CLEARANCE_X
+            right = position.right + self.CONNECTOR_CLEARANCE_X
+            top = position.top_y - self.CONNECTOR_CLEARANCE_Y
+            bottom = position.bottom + self.CONNECTOR_CLEARANCE_Y
+            if top < y < bottom and not (
+                segment_right <= left or segment_left >= right
+            ):
+                return True
+        return False
 
     def _build_partner_components(self, genealogy: Genealogy):
         return self._layout._build_partner_components(genealogy)

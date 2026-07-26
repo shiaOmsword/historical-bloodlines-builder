@@ -55,8 +55,9 @@ class PersonLayoutHint:
     """Optional user-provided constraints for the visual layout.
 
     ``generation`` is one-based in Excel because that is the natural notation
-    for editors. ``order`` is only a relative left-to-right priority; it is not
-    an absolute x-coordinate.
+    for editors. Partners may have different genealogical generations; the
+    layout places their shared component on the deepest requested row. ``order``
+    is only a relative left-to-right priority, not an absolute x-coordinate.
     """
 
     generation: int | None = None

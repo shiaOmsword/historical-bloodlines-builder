@@ -74,24 +74,40 @@ class ExcelGenealogyReader:
             )
 
         rows: list[RawGenealogyRowDTO] = []
+        seen_source_numbers: dict[int, tuple[int, str]] = {}
         data_start_row = 3 if self._is_title_row(first_row) else 2
         for excel_row_number, values in enumerate(iterator, start=data_start_row):
             person_name = self._value(values, header_index["Имя"])
             if person_name is None or not str(person_name).strip():
                 continue
+            person_name_text = str(person_name).strip()
 
             source_number = self._value(values, header_index["№"])
-            row_number = (
-                int(source_number)
-                if source_number not in (None, "")
-                else excel_row_number
+            row_number = self._parse_source_number(
+                source_number,
+                worksheet_title=worksheet.title,
+                excel_row_number=excel_row_number,
+                person_name=person_name_text,
             )
+            if row_number is None:
+                row_number = excel_row_number
+
+            previous = seen_source_numbers.get(row_number)
+            if previous is not None:
+                previous_excel_row, previous_name = previous
+                raise ValueError(
+                    f"Лист {worksheet.title!r}: повторяющийся № {row_number} "
+                    f"в ячейках A{previous_excel_row} ({previous_name!r}) и "
+                    f"A{excel_row_number} ({person_name_text!r}). "
+                    "Значения в колонке '№' должны быть уникальными."
+                )
+            seen_source_numbers[row_number] = (excel_row_number, person_name_text)
 
             rows.append(
                 RawGenealogyRowDTO(
                     row_number=row_number,
                     source_sheet=worksheet.title,
-                    person_name=str(person_name),
+                    person_name=person_name_text,
                     title_raw=self._optional_text(values, header_index["Титул"]),
                     reign_start_raw=self._value(
                         values,
@@ -114,6 +130,48 @@ class ExcelGenealogyReader:
                 )
             )
         return display_title, tuple(rows)
+
+
+    @staticmethod
+    def _parse_source_number(
+        value: object | None,
+        *,
+        worksheet_title: str,
+        excel_row_number: int,
+        person_name: str,
+    ) -> int | None:
+        if value in (None, ""):
+            return None
+        if isinstance(value, bool):
+            raise ValueError(
+                f"Лист {worksheet_title!r}, ячейка A{excel_row_number} "
+                f"({person_name!r}): значение '№' должно быть целым числом."
+            )
+        try:
+            number = int(value)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                f"Лист {worksheet_title!r}, ячейка A{excel_row_number} "
+                f"({person_name!r}): значение '№' должно быть целым числом."
+            ) from exc
+        if isinstance(value, float) and not value.is_integer():
+            raise ValueError(
+                f"Лист {worksheet_title!r}, ячейка A{excel_row_number} "
+                f"({person_name!r}): значение '№' должно быть целым числом."
+            )
+        if isinstance(value, str):
+            stripped = value.strip()
+            if not stripped or str(number) != stripped:
+                raise ValueError(
+                    f"Лист {worksheet_title!r}, ячейка A{excel_row_number} "
+                    f"({person_name!r}): значение '№' должно быть целым числом."
+                )
+        if number < 1:
+            raise ValueError(
+                f"Лист {worksheet_title!r}, ячейка A{excel_row_number} "
+                f"({person_name!r}): значение '№' должно быть положительным."
+            )
+        return number
 
     @classmethod
     def _is_title_row(cls, values: tuple[object, ...]) -> bool:
