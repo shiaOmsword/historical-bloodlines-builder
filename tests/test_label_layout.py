@@ -54,15 +54,48 @@ def test_titles_and_reign_dates_use_one_consistent_parenthetical_format() -> Non
     assert person.titles == ("король", "император")
     assert box.lines == (
         "Оттон I",
-        "(король 936-973,",
-        "император с 962)",
+        "(936-973, император",
+        "с 962)",
     )
 
 
-def test_marriage_connector_is_drawn_as_equals_sign() -> None:
+def test_complete_reign_range_precedes_open_ended_qualification() -> None:
+    labels = formatter()
+    person = Person.create(
+        source_key=SourcePersonKey("Dynasty", 2),
+        name="Оттон I",
+        titles=("Император", "Король"),
+        reign_periods=(ReignPeriod(962), ReignPeriod(936, 973)),
+    )
+
+    assert labels.measure(person).lines == (
+        "Оттон I",
+        "(936-973, император",
+        "с 962)",
+    )
+
+
+def test_single_complete_reign_keeps_its_title() -> None:
+    labels = formatter()
+    person = Person.create(
+        source_key=SourcePersonKey("Dynasty", 3),
+        name="Людовик",
+        titles=("Король",),
+        reign_periods=(ReignPeriod(1226, 1270),),
+    )
+
+    assert labels.measure(person).lines == (
+        "Людовик",
+        "(король 1226-1270)",
+    )
+
+
+def test_marriage_connector_is_drawn_as_compact_equals_sign() -> None:
     renderer = GraphvizGenealogyRenderer()
 
     assert renderer._marriage_line_ys(100.0) == (98.0, 102.0)
+    assert renderer._marriage_sign_xs(100.0, 160.0) == (124.0, 136.0)
+    assert renderer._marriage_sign_xs(100.0, 108.0) == (100.0, 108.0)
 
 
 def test_child_drop_detours_around_unrelated_person_box() -> None:

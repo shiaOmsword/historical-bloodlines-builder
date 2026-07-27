@@ -48,6 +48,7 @@ class GraphvizGenealogyRenderer:
     TITLE_AREA = 34.0
     LINE_WIDTH = 1.0
     MARRIAGE_LINE_GAP = 4.0
+    MARRIAGE_SIGN_WIDTH = 12.0
     SINGLE_CHILD_SNAP_MAX = 18.0
     MIN_LANDSCAPE_RATIO = 1.4142
     MIN_PAGE_WIDTH = 760.0
@@ -252,13 +253,17 @@ class GraphvizGenealogyRenderer:
 
             name_y_a = pos_a.top_y + self.LINE_HEIGHT * 0.58
             name_y_b = pos_b.top_y + self.LINE_HEIGHT * 0.58
-            line_y = (name_y_a + name_y_b) / 2
+            line_y = self._snap_coordinate((name_y_a + name_y_b) / 2)
             upper_line_y, lower_line_y = self._marriage_line_ys(line_y)
-            left_x = pos_a.right + 5.0
-            right_x = pos_b.left - 5.0
-            if right_x < left_x:
-                left_x = pos_a.center_x
-                right_x = pos_b.center_x
+            gap_left_x = pos_a.right + 5.0
+            gap_right_x = pos_b.left - 5.0
+            if gap_right_x < gap_left_x:
+                gap_left_x = pos_a.center_x
+                gap_right_x = pos_b.center_x
+            left_x, right_x = self._marriage_sign_xs(
+                gap_left_x,
+                gap_right_x,
+            )
 
             junction_xs = [left_x, right_x]
             for family in families:
@@ -681,8 +686,29 @@ class GraphvizGenealogyRenderer:
 
     @classmethod
     def _marriage_line_ys(cls, center_y: float) -> tuple[float, float]:
+        center_y = cls._snap_coordinate(center_y)
         half_gap = cls.MARRIAGE_LINE_GAP / 2
-        return center_y - half_gap, center_y + half_gap
+        return cls._snap_coordinate(center_y - half_gap), cls._snap_coordinate(center_y + half_gap)
+
+    @classmethod
+    def _marriage_sign_xs(
+        cls,
+        gap_left_x: float,
+        gap_right_x: float,
+    ) -> tuple[float, float]:
+        """Return a compact, centered horizontal extent for the ``=`` sign."""
+
+        left_boundary, right_boundary = sorted((gap_left_x, gap_right_x))
+        center_x = cls._snap_coordinate((left_boundary + right_boundary) / 2)
+        sign_width = min(cls.MARRIAGE_SIGN_WIDTH, right_boundary - left_boundary)
+        half_width = sign_width / 2
+        return cls._snap_coordinate(center_x - half_width), cls._snap_coordinate(center_x + half_width)
+
+    @staticmethod
+    def _snap_coordinate(value: float) -> float:
+        """Snap line geometry to whole points for visually even strokes."""
+
+        return round(value)
 
     @staticmethod
     def _partnership_pairs(genealogy: Genealogy) -> set[frozenset[UUID]]:

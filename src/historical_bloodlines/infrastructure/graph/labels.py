@@ -4,7 +4,7 @@ import html
 import textwrap
 from dataclasses import dataclass
 
-from historical_bloodlines.domain import Person
+from historical_bloodlines.domain import Person, ReignPeriod
 from historical_bloodlines.infrastructure.graph.models import PersonBox
 
 
@@ -60,22 +60,68 @@ class PersonLabelFormatter:
                 for line in self.wrap(title)
             )
 
-        items: list[str] = []
+        entries: list[tuple[str, ReignPeriod | None]] = []
         item_count = max(len(person.titles), len(person.reign_periods))
         for index in range(item_count):
             title = person.titles[index] if index < len(person.titles) else ""
-            if index < len(person.reign_periods):
-                period = person.reign_periods[index]
-                dates = (
-                    f"{period.start_year}-{period.end_year}"
-                    if period.end_year is not None
-                    else f"с {period.start_year}"
-                )
-                items.append(" ".join(part for part in (title, dates) if part))
-            elif title:
-                items.append(title)
+            period = (
+                person.reign_periods[index]
+                if index < len(person.reign_periods)
+                else None
+            )
+            entries.append((title, period))
 
+        # A complete reign range is the reader's primary chronological anchor.
+        # It must always appear first, before any later qualification such as
+        # ``император с 962``. Python's sort is stable, so the source order is
+        # preserved inside each group.
+        entries.sort(
+            key=lambda entry: (
+                0
+                if entry[1] is not None and entry[1].end_year is not None
+                else 1
+                if entry[1] is not None
+                else 2
+            )
+        )
+
+        items = self._format_reign_items(entries)
         return self.wrap(f"({', '.join(items)})")
+
+    @staticmethod
+    def _format_reign_items(
+        entries: list[tuple[str, ReignPeriod | None]],
+    ) -> list[str]:
+        items: list[str] = []
+        complete_entries = [
+            (title, period)
+            for title, period in entries
+            if period is not None and period.end_year is not None
+        ]
+        has_qualifications = any(
+            period is None or period.end_year is None
+            for _, period in entries
+        )
+        primary_complete_period = complete_entries[0][1] if complete_entries and has_qualifications else None
+
+        for title, period in entries:
+            if period is None:
+                if title:
+                    items.append(title)
+                continue
+
+            if period.end_year is not None:
+                dates = f"{period.start_year}-{period.end_year}"
+                if primary_complete_period is period:
+                    items.append(dates)
+                else:
+                    items.append(" ".join(part for part in (title, dates) if part))
+                continue
+
+            qualification = f"с {period.start_year}"
+            items.append(" ".join(part for part in (title, qualification) if part))
+
+        return items
 
     def wrap_name(self, value: str) -> tuple[str, ...]:
         """Wrap names a little earlier than titles and dates.
