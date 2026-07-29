@@ -53,7 +53,7 @@ def test_titles_and_reign_dates_use_one_consistent_parenthetical_format() -> Non
 
     assert person.titles == ("король", "император")
     assert box.lines == (
-        "Оттон I",
+        "Оттон I,",
         "(936-973, император",
         "с 962)",
     )
@@ -69,7 +69,7 @@ def test_complete_reign_range_precedes_open_ended_qualification() -> None:
     )
 
     assert labels.measure(person).lines == (
-        "Оттон I",
+        "Оттон I,",
         "(936-973, император",
         "с 962)",
     )
@@ -85,9 +85,60 @@ def test_single_complete_reign_keeps_its_title() -> None:
     )
 
     assert labels.measure(person).lines == (
-        "Людовик",
+        "Людовик,",
         "(король 1226-1270)",
     )
+
+
+def test_textual_title_adds_comma_even_when_excel_name_has_none() -> None:
+    labels = formatter()
+    person = Person.create(
+        source_key=SourcePersonKey("Dynasty", 4),
+        name="Оттон I",
+        titles=("Король Восточных Франков (936-973)",),
+    )
+
+    assert labels.measure(person).lines == (
+        "Оттон I,",
+        "король Восточных",
+        "Франков (936-973)",
+    )
+
+
+def test_date_only_title_does_not_add_comma() -> None:
+    labels = formatter()
+    person = Person.create(
+        source_key=SourcePersonKey("Dynasty", 5),
+        name="Рюрик,",
+        titles=("862-879",),
+    )
+
+    assert labels.measure(person).lines == ("Рюрик", "862-879")
+
+
+def test_life_date_note_does_not_add_comma() -> None:
+    labels = formatter()
+    person = Person.create(
+        source_key=SourcePersonKey("Dynasty", 6),
+        name="Эдуард Чёрный принц,",
+        titles=("ум. в 960",),
+    )
+
+    assert labels.measure(person).lines == (
+        "Эдуард Чёрный",
+        "принц",
+        "ум. в 960",
+    )
+
+
+def test_existing_terminal_comma_is_removed_when_title_is_absent() -> None:
+    labels = formatter()
+    person = Person.create(
+        source_key=SourcePersonKey("Dynasty", 7),
+        name="Матильда,",
+    )
+
+    assert labels.measure(person).lines == ("Матильда",)
 
 
 def test_marriage_connector_is_drawn_as_compact_equals_sign() -> None:

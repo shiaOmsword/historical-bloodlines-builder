@@ -1,11 +1,20 @@
 from __future__ import annotations
 
 import html
+import re
 import textwrap
 from dataclasses import dataclass
 
 from historical_bloodlines.domain import Person, ReignPeriod
 from historical_bloodlines.infrastructure.graph.models import PersonBox
+
+
+_TRAILING_COMMA_RE = re.compile(r",+\s*$")
+_NON_TITLE_WORD_RE = re.compile(
+    r"(?iu)\b(?:с|до|по|в|после|между|ок|около|ум|умер|умерла|р|род|"
+    r"родился|родилась|г|гг|н|э|правил|правила|правление)\b\.?"
+)
+_LETTER_RE = re.compile(r"[^\W\d_]", re.UNICODE)
 
 
 @dataclass(frozen=True, slots=True)
@@ -18,7 +27,7 @@ class PersonLabelFormatter:
     max_name_line: int | None = None
 
     def measure(self, person: Person) -> PersonBox:
-        name_lines = self.wrap_name(person.name)
+        name_lines = self._name_lines(person)
         lines = [*name_lines, *self._title_and_reign_lines(person)]
 
         max_chars = max((len(line) for line in lines), default=1)
@@ -39,6 +48,35 @@ class PersonLabelFormatter:
             width=width,
             height=height,
         )
+
+
+    def _name_lines(self, person: Person) -> tuple[str, ...]:
+        """Format terminal punctuation independently from the Excel value.
+
+        Older workbooks contain commas typed directly into the ``Имя`` column.
+        They are removed first, then restored only when the ``Титул`` column
+        contains an actual textual title. A chronology-only value such as
+        ``862-879`` or ``ум. 1376`` therefore never produces a comma.
+        """
+
+        clean_name = _TRAILING_COMMA_RE.sub("", person.name).rstrip()
+        if self._has_textual_title(person):
+            clean_name = f"{clean_name},"
+        return self.wrap_name(clean_name)
+
+    @staticmethod
+    def _has_textual_title(person: Person) -> bool:
+        for title in person.titles:
+            without_dates = re.sub(r"-?\d{3,4}", " ", title)
+            without_date_punctuation = re.sub(
+                r"[()\[\]{},.;:–—-]+",
+                " ",
+                without_dates,
+            )
+            meaningful_text = _NON_TITLE_WORD_RE.sub(" ", without_date_punctuation)
+            if _LETTER_RE.search(meaningful_text):
+                return True
+        return False
 
     def html_label(self, person: Person) -> str:
         box = self.measure(person)
