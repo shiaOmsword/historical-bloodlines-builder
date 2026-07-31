@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import html
 import math
+from dataclasses import dataclass
 from itertools import pairwise
 from pathlib import Path
 from uuid import UUID, uuid4
@@ -15,9 +16,20 @@ from historical_bloodlines.infrastructure.graph.layout import (
     LayoutConfig,
 )
 from historical_bloodlines.infrastructure.graph.models import (
+    FamilyView,
     PersonBox,
     PersonPosition,
 )
+
+
+@dataclass(frozen=True, slots=True)
+class _FamilyBusGeometry:
+    source_x: float
+    child_xs: tuple[float, ...]
+    left: float
+    right: float
+    base_y: float
+    max_y: float
 
 
 class GraphvizGenealogyRenderer:
@@ -65,6 +77,13 @@ class GraphvizGenealogyRenderer:
     CONNECTOR_CLEARANCE_X = 8.0
     CONNECTOR_CLEARANCE_Y = 5.0
     CONNECTOR_APPROACH_GAP = 9.0
+
+    # When one person has children from several partners, their horizontal
+    # child buses can overlap exactly and look like one undifferentiated line.
+    # Overlapping families are routed through separate nearby lanes.
+    FAMILY_BUS_GAP = 8.0
+    FAMILY_BUS_MIN_GAP = 2.5
+    FAMILY_BUS_CHILD_CLEARANCE = 4.0
 
     def __init__(self) -> None:
         self._labels = PersonLabelFormatter(
@@ -284,6 +303,15 @@ class GraphvizGenealogyRenderer:
 
         # Parent-child connectors. Every connector is built from separate exact
         # horizontal/vertical segments, so Graphviz cannot curve or loop it.
+        # Families from different marriages of the same person may have
+        # overlapping horizontal spans. Put those buses on separate lanes so
+        # two marriages never collapse into one continuous line.
+        family_bus_ys = self._family_bus_ys(
+            families,
+            person_positions,
+            marriage_connectors,
+        )
+
         for family in families:
             children = sorted(
                 family.child_ids,
@@ -329,8 +357,7 @@ class GraphvizGenealogyRenderer:
             child_xs = [person_positions[child_id].center_x for child_id in children]
             child_tops = [person_positions[child_id].top_y for child_id in children]
             child_top = min(child_tops)
-            available = max(14.0, child_top - source_y)
-            bar_y = source_y + min(max(10.0, available * 0.34), 20.0)
+            bar_y = family_bus_ys[family]
 
             child_routes = [
                 self._route_child_drop(
@@ -380,6 +407,151 @@ class GraphvizGenealogyRenderer:
         )
         rendered.replace(output_path)
         return output_path
+
+
+    def _family_bus_ys(
+        self,
+        families: tuple[FamilyView, ...],
+        person_positions: dict[UUID, PersonPosition],
+        marriage_connectors: dict[frozenset[UUID], tuple[float, float, float]],
+    ) -> dict[FamilyView, float]:
+        """Return a collision-resistant horizontal bus Y for every family.
+
+        A partner component can contain several marriages. If two child groups
+        occupy overlapping X-ranges, using the same Y joins their buses into one
+        apparent family line. We detect overlapping spans and assign nearby
+        lanes in marriage order.
+
+        The lane order follows the direction of the descendants. When children
+        lie mostly to the left, left marriage sources stay higher; when they lie
+        mostly to the right, right marriage sources stay higher. This prevents a
+        later source stem from crossing an earlier family bus in the common
+        nested-branch case.
+        """
+
+        geometry: dict[FamilyView, _FamilyBusGeometry] = {}
+        by_component: dict[int, list[FamilyView]] = {}
+
+        for family in families:
+            children = tuple(family.child_ids)
+            if not children:
+                continue
+
+            if len(family.parent_ids) == 2:
+                pair = frozenset(family.parent_ids)
+                connector = marriage_connectors.get(pair)
+                if connector is None:
+                    source_x, _ = self._pair_fallback_midpoint(
+                        family.parent_ids,
+                        person_positions,
+                    )
+                else:
+                    left_x, right_x, _ = connector
+                    source_x = (left_x + right_x) / 2
+                    if len(children) == 1:
+                        only_child_x = person_positions[children[0]].center_x
+                        if left_x - 0.5 <= only_child_x <= right_x + 0.5:
+                            source_x = only_child_x
+
+                source_y = max(
+                    person_positions[parent_id].bottom
+                    for parent_id in family.parent_ids
+                ) + 4.0
+            else:
+                parent_position = person_positions[family.parent_ids[0]]
+                source_x = parent_position.center_x
+                source_y = parent_position.bottom + 4.0
+
+            child_xs = tuple(
+                person_positions[child_id].center_x for child_id in children
+            )
+            child_top = min(
+                person_positions[child_id].top_y for child_id in children
+            )
+            available = max(14.0, child_top - source_y)
+            base_y = source_y + min(max(10.0, available * 0.34), 20.0)
+            max_y = max(base_y, child_top - self.FAMILY_BUS_CHILD_CLEARANCE)
+
+            geometry[family] = _FamilyBusGeometry(
+                source_x=source_x,
+                child_xs=child_xs,
+                left=min(source_x, *child_xs),
+                right=max(source_x, *child_xs),
+                base_y=base_y,
+                max_y=max_y,
+            )
+            by_component.setdefault(family.parent_component_id, []).append(family)
+
+        result = {family: item.base_y for family, item in geometry.items()}
+
+        for component_families in by_component.values():
+            if len(component_families) < 2:
+                continue
+
+            # Build transitive clusters of horizontally overlapping family spans.
+            ordered_by_left = sorted(
+                component_families,
+                key=lambda family: (
+                    geometry[family].left,
+                    geometry[family].right,
+                ),
+            )
+            clusters: list[list[FamilyView]] = []
+            current: list[FamilyView] = []
+            current_right = -math.inf
+            for family in ordered_by_left:
+                item = geometry[family]
+                if current and item.left > current_right + 0.5:
+                    clusters.append(current)
+                    current = []
+                    current_right = -math.inf
+                current.append(family)
+                current_right = max(current_right, item.right)
+            if current:
+                clusters.append(current)
+
+            for cluster in clusters:
+                if len(cluster) < 2:
+                    continue
+
+                direction_score = sum(
+                    (sum(geometry[family].child_xs) / len(geometry[family].child_xs))
+                    - geometry[family].source_x
+                    for family in cluster
+                )
+                # Descendants on the left: left source first (upper lane).
+                # Descendants on the right: right source first (upper lane).
+                lane_order = sorted(
+                    cluster,
+                    key=lambda family: geometry[family].source_x,
+                    reverse=direction_score > 0,
+                )
+
+                assigned: list[float] | None = None
+                gap = self.FAMILY_BUS_GAP
+                while gap >= self.FAMILY_BUS_MIN_GAP - 0.01:
+                    candidate: list[float] = []
+                    previous_y = -math.inf
+                    feasible = True
+                    for family in lane_order:
+                        item = geometry[family]
+                        y = max(item.base_y, previous_y + gap)
+                        if y > item.max_y + 0.05:
+                            feasible = False
+                            break
+                        candidate.append(y)
+                        previous_y = y
+                    if feasible:
+                        assigned = candidate
+                        break
+                    gap -= 0.5
+
+                if assigned is None:
+                    continue
+                for family, y in zip(lane_order, assigned, strict=True):
+                    result[family] = y
+
+        return result
 
     @staticmethod
     def _horizontal_bus_segments(

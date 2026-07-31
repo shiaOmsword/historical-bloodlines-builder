@@ -210,3 +210,92 @@ def test_child_drop_stays_straight_when_corridor_is_clear() -> None:
 
     assert connection_x == 100.0
     assert segments == ((100.0, 50.0, 100.0, 300.0),)
+
+
+def test_overlapping_families_use_separate_child_bus_lanes() -> None:
+    from uuid import uuid4
+
+    from historical_bloodlines.infrastructure.graph.models import (
+        FamilyView,
+        PersonPosition,
+    )
+
+    renderer = GraphvizGenealogyRenderer()
+    mother_left, father, mother_right = uuid4(), uuid4(), uuid4()
+    child_left, child_middle, child_right = uuid4(), uuid4(), uuid4()
+    positions = {
+        mother_left: PersonPosition(80.0, 50.0, 40.0, 30.0),
+        father: PersonPosition(120.0, 50.0, 40.0, 30.0),
+        mother_right: PersonPosition(160.0, 50.0, 40.0, 30.0),
+        child_left: PersonPosition(20.0, 120.0, 40.0, 30.0),
+        child_middle: PersonPosition(80.0, 120.0, 40.0, 30.0),
+        child_right: PersonPosition(60.0, 120.0, 40.0, 30.0),
+    }
+    first_family = FamilyView(
+        parent_ids=(mother_left, father),
+        child_ids=(child_left, child_middle),
+        parent_component_id=1,
+        source_offset=-20.0,
+    )
+    second_family = FamilyView(
+        parent_ids=(father, mother_right),
+        child_ids=(child_right,),
+        parent_component_id=1,
+        source_offset=20.0,
+    )
+    connectors = {
+        frozenset((mother_left, father)): (90.0, 110.0, 70.0),
+        frozenset((father, mother_right)): (130.0, 150.0, 70.0),
+    }
+
+    bus_ys = renderer._family_bus_ys(
+        (first_family, second_family),
+        positions,
+        connectors,
+    )
+
+    assert bus_ys[second_family] - bus_ys[first_family] == renderer.FAMILY_BUS_GAP
+
+
+def test_non_overlapping_families_keep_the_compact_bus_level() -> None:
+    from uuid import uuid4
+
+    from historical_bloodlines.infrastructure.graph.models import (
+        FamilyView,
+        PersonPosition,
+    )
+
+    renderer = GraphvizGenealogyRenderer()
+    mother_left, father, mother_right = uuid4(), uuid4(), uuid4()
+    child_left, child_right = uuid4(), uuid4()
+    positions = {
+        mother_left: PersonPosition(80.0, 50.0, 40.0, 30.0),
+        father: PersonPosition(120.0, 50.0, 40.0, 30.0),
+        mother_right: PersonPosition(160.0, 50.0, 40.0, 30.0),
+        child_left: PersonPosition(20.0, 120.0, 40.0, 30.0),
+        child_right: PersonPosition(220.0, 120.0, 40.0, 30.0),
+    }
+    first_family = FamilyView(
+        parent_ids=(mother_left, father),
+        child_ids=(child_left,),
+        parent_component_id=1,
+        source_offset=-20.0,
+    )
+    second_family = FamilyView(
+        parent_ids=(father, mother_right),
+        child_ids=(child_right,),
+        parent_component_id=1,
+        source_offset=20.0,
+    )
+    connectors = {
+        frozenset((mother_left, father)): (90.0, 110.0, 70.0),
+        frozenset((father, mother_right)): (130.0, 150.0, 70.0),
+    }
+
+    bus_ys = renderer._family_bus_ys(
+        (first_family, second_family),
+        positions,
+        connectors,
+    )
+
+    assert bus_ys[first_family] == bus_ys[second_family]
