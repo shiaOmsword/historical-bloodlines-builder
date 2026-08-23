@@ -17,6 +17,12 @@ _NON_TITLE_WORD_RE = re.compile(
 _LETTER_RE = re.compile(r"[^\W\d_]", re.UNICODE)
 
 
+def normalize_display_text(value: str) -> str:
+    """Use a true em dash in every piece of text shown in the diagram."""
+
+    return value.replace("-", "—")
+
+
 @dataclass(frozen=True, slots=True)
 class PersonLabelFormatter:
     font_size: float
@@ -199,7 +205,7 @@ class PersonLabelFormatter:
 
     @staticmethod
     def _wrap_to_width(value: str, width: int) -> tuple[str, ...]:
-        value = " ".join(value.split())
+        value = normalize_display_text(" ".join(value.split()))
         if not value:
             return ()
         wrapped = textwrap.wrap(

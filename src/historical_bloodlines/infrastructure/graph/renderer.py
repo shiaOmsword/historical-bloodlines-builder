@@ -10,7 +10,10 @@ from uuid import UUID, uuid4
 from graphviz import Graph
 
 from historical_bloodlines.domain import Genealogy, Person
-from historical_bloodlines.infrastructure.graph.labels import PersonLabelFormatter
+from historical_bloodlines.infrastructure.graph.labels import (
+    PersonLabelFormatter,
+    normalize_display_text,
+)
 from historical_bloodlines.infrastructure.graph.layout import (
     FixedGenealogyLayout,
     LayoutConfig,
@@ -237,7 +240,7 @@ class GraphvizGenealogyRenderer:
 
         graph.node(
             "title",
-            label=f"<<B>{html.escape(title)}</B>>",
+            label=f"<<B>{html.escape(normalize_display_text(title))}</B>>",
             pos=f"{page_width / 2:.3f},{graph_y(self.PAGE_MARGIN_Y + 8):.3f}!",
             fontsize=str(self.TITLE_FONT_SIZE),
             fontname=self.FONT_FAMILY,

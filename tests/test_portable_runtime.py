@@ -23,7 +23,7 @@ def test_settings_create_user_data_directories(
     settings = get_settings()
 
     assert settings.input_file == data_directory / "input" / "input.xlsx"
-    assert settings.output_file == data_directory / "output" / "genealogy.pdf"
+    assert settings.output_file == data_directory / "output" / "genealogy.svg"
     assert settings.input_file.parent.is_dir()
     assert settings.output_file.parent.is_dir()
     get_settings.cache_clear()

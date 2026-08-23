@@ -328,7 +328,7 @@ poetry run bloodlines-launcher
 Лаунчер не заменяет обычную команду `bloodlines`, а работает поверх того же
 `BuildGenealogyUseCase`. В нём доступны:
 
-- быстрая сборка с путями из `Settings` и PDF A5;
+- быстрая сборка с путями из `Settings` и SVG по умолчанию;
 - выбор входного Excel, PDF/SVG/PNG и выходного пути;
 - выбор A5 или A4 для PDF;
 - просмотр текущей конфигурации и доступности Graphviz;
@@ -379,7 +379,7 @@ Windows-консоли, а ширина панелей подстраивает�
 ```text
 Documents/Historical Bloodlines/
 ├── input/input.xlsx
-└── output/genealogy.pdf
+└── output/genealogy.svg
 ```
 
 Переменные `BLOODLINES_DATA_DIR`, `BLOODLINES_INPUT_FILE` и

@@ -54,7 +54,7 @@ def test_titles_and_reign_dates_use_one_consistent_parenthetical_format() -> Non
     assert person.titles == ("король", "император")
     assert box.lines == (
         "Оттон I,",
-        "(936-973, император",
+        "(936—973, император",
         "с 962)",
     )
 
@@ -70,7 +70,7 @@ def test_complete_reign_range_precedes_open_ended_qualification() -> None:
 
     assert labels.measure(person).lines == (
         "Оттон I,",
-        "(936-973, император",
+        "(936—973, император",
         "с 962)",
     )
 
@@ -86,7 +86,7 @@ def test_single_complete_reign_keeps_its_title() -> None:
 
     assert labels.measure(person).lines == (
         "Людовик,",
-        "(король 1226-1270)",
+        "(король 1226—1270)",
     )
 
 
@@ -101,7 +101,7 @@ def test_textual_title_adds_comma_even_when_excel_name_has_none() -> None:
     assert labels.measure(person).lines == (
         "Оттон I,",
         "король Восточных",
-        "Франков (936-973)",
+        "Франков (936—973)",
     )
 
 
@@ -113,7 +113,7 @@ def test_date_only_title_does_not_add_comma() -> None:
         titles=("862-879",),
     )
 
-    assert labels.measure(person).lines == ("Рюрик", "862-879")
+    assert labels.measure(person).lines == ("Рюрик", "862—879")
 
 
 def test_life_date_note_does_not_add_comma() -> None:

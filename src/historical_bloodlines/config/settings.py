@@ -34,7 +34,7 @@ def get_settings() -> Settings:
         output_file=Path(
             os.getenv(
                 "BLOODLINES_OUTPUT_FILE",
-                str(output_directory / "genealogy.pdf"),
+                str(output_directory / "genealogy.svg"),
             )
         ).expanduser(),
     )

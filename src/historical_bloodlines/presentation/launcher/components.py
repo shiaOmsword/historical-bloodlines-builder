@@ -78,7 +78,8 @@ def render_paths(
     table.add_column(style="white")
     table.add_row("Excel", str(input_path))
     table.add_row("Результат", str(output_path))
-    table.add_row("Формат страницы", page_format.upper())
+    if output_path.suffix.casefold() == ".pdf":
+        table.add_row("Формат страницы", page_format.upper())
     console.print(
         Panel(
             table,
