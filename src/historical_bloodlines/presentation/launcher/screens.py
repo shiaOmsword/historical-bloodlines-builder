@@ -159,7 +159,7 @@ class CustomBuildScreen:
 
         output_format = Prompt.ask(
             "Формат результата",
-            choices=["pdf", "svg", "png"],
+            choices=["pdf", "svg", "png", "eps"],
             default=self._default_output_format(),
             console=self._console,
         )
@@ -215,7 +215,7 @@ class CustomBuildScreen:
 
     def _default_output_format(self) -> str:
         suffix = self._settings.output_file.suffix.casefold().removeprefix(".")
-        return suffix if suffix in {"pdf", "svg", "png"} else "pdf"
+        return suffix if suffix in {"pdf", "svg", "png", "eps"} else "pdf"
 
     def _show_dialog_error(self, error: Exception) -> None:
         self._console.print(

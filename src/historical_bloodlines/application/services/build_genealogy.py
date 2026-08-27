@@ -68,8 +68,8 @@ class BuildGenealogyUseCase:
             raise ValueError("Workbook contains no genealogy rows")
 
         output_format = output_path.suffix.casefold()
-        if output_format not in {".pdf", ".svg", ".png"}:
-            raise ValueError("Output format must be .pdf, .svg or .png")
+        if output_format not in {".pdf", ".svg", ".png", ".eps"}:
+            raise ValueError("Output format must be .pdf, .svg, .png or .eps")
 
         selected_page_format = PageFormat(page_format)
         if output_format == ".pdf":

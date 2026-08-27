@@ -98,7 +98,16 @@ SVG:
 poetry run bloodlines -i data/input/input.xlsx -o data/output/genealogy.svg
 ```
 
-Если в книге несколько заполненных листов, SVG и PNG сохраняются в отдельный
+EPS для издательства:
+
+```powershell
+poetry run bloodlines -i data/input/input.xlsx -o data/output/genealogy.eps
+```
+
+EPS рендерится через Cairo backend Graphviz, чтобы кириллица и Unicode не
+ломались в PostScript-выводе.
+
+Если в книге несколько заполненных листов, SVG, PNG и EPS сохраняются в отдельный
 каталог:
 
 ```text
@@ -304,7 +313,7 @@ poetry build
 ## Ограничения
 
 - поддерживается только `.xlsx`;
-- выходной формат — PDF, SVG или PNG;
+- выходной формат — PDF, SVG, PNG или EPS;
 - терминальная подпись без отдельной строки создаётся как placeholder-узел и
   фиксируется в предупреждениях сборки;
 - разрешение неоднозначных имён опирается на имя, титул, уточнение и контекст

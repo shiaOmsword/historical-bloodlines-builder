@@ -28,7 +28,7 @@ def build(
         None,
         "--output",
         "-o",
-        help="Output .pdf, .svg or .png path.",
+        help="Output .pdf, .svg, .png or .eps path.",
     ),
     page_format: PageFormat = typer.Option(
         PageFormat.A5,

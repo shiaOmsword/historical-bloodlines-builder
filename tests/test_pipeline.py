@@ -107,6 +107,29 @@ def test_pdf_can_be_rendered_as_a4(tmp_path: Path) -> None:
     assert warnings == ()
 
 
+def test_excel_to_separate_eps_files(tmp_path: Path) -> None:
+    source = tmp_path / "input.xlsx"
+    output = tmp_path / "tree.eps"
+
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "Тестовая династия"
+    sheet.append(HEADERS)
+    sheet.append([1, "Родитель", None, None, None, "Ребёнок", None])
+    sheet.append([2, "Ребёнок", None, None, None, None, None])
+    workbook.save(source)
+
+    rendered, warnings = BuildGenealogyUseCase().execute(source, output)
+
+    assert rendered.is_dir()
+    files = tuple(rendered.glob("*.eps"))
+    assert len(files) == 1
+    eps_text = files[0].read_text(encoding="latin-1")
+    assert eps_text.startswith("%!PS-Adobe")
+    assert "cairo" in eps_text.casefold()
+    assert warnings == ()
+
+
 def test_excel_to_separate_svg_files(tmp_path: Path) -> None:
     source = tmp_path / "input.xlsx"
     output = tmp_path / "tree.svg"

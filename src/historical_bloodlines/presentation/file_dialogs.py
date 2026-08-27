@@ -56,7 +56,7 @@ def select_output_file(
     output_format: str,
 ) -> Path | None:
     normalized_format = output_format.casefold().removeprefix(".")
-    if normalized_format not in {"pdf", "svg", "png"}:
+    if normalized_format not in {"pdf", "svg", "png", "eps"}:
         raise ValueError(f"Unsupported output format: {output_format}")
 
     filedialog = _load_filedialog()

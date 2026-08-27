@@ -18,19 +18,30 @@ from historical_bloodlines.config import (
 
 
 def run_self_test(console: Console) -> int:
-    """Exercise bundled resources, Graphviz and the complete PDF pipeline."""
+    """Exercise bundled resources plus the PDF and publisher EPS pipelines."""
     try:
         runtime = prepare_bundled_graphviz()
         source = _example_workbook()
         with TemporaryDirectory(prefix="bloodlines_self_test_") as temporary:
-            output = Path(temporary) / "self-test.pdf"
-            result = BuildGenealogyUseCase().execute(
+            temporary_path = Path(temporary)
+            pdf_result = BuildGenealogyUseCase().execute(
                 source,
-                output,
+                temporary_path / "self-test.pdf",
                 page_format=PageFormat.A5,
             )
-            if not result.output_path.is_file() or result.output_path.stat().st_size == 0:
+            if (
+                not pdf_result.output_path.is_file()
+                or pdf_result.output_path.stat().st_size == 0
+            ):
                 raise RuntimeError("Тестовый PDF не был создан.")
+
+            eps_result = BuildGenealogyUseCase().execute(
+                source,
+                temporary_path / "self-test.eps",
+            )
+            eps_files = tuple(eps_result.output_path.glob("*.eps"))
+            if not eps_files or any(path.stat().st_size == 0 for path in eps_files):
+                raise RuntimeError("Тестовый EPS не был создан.")
     except Exception as exc:
         console.print(
             Panel(
@@ -62,7 +73,7 @@ def _example_workbook() -> Path:
 
 def _runtime_description(runtime: GraphvizRuntime) -> str:
     return (
-        "Полный цикл Excel → Graphviz → PDF выполнен.\n"
+        "Полный цикл Excel → Graphviz → PDF/EPS выполнен.\n"
         f"Graphviz: {runtime.source}\n"
         f"dot: {runtime.dot_path}\n"
         f"neato: {runtime.neato_path}"

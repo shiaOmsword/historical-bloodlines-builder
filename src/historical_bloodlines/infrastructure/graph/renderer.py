@@ -122,8 +122,8 @@ class GraphvizGenealogyRenderer:
     ) -> Path:
         output_path.parent.mkdir(parents=True, exist_ok=True)
         output_format = output_path.suffix.lstrip(".").casefold()
-        if output_format not in {"pdf", "svg", "png"}:
-            raise ValueError("Output format must be pdf, svg or png")
+        if output_format not in {"pdf", "svg", "png", "eps"}:
+            raise ValueError("Output format must be pdf, svg, png or eps")
 
         components, component_by_person = self._build_partner_components(genealogy)
         families = self._build_families(genealogy, component_by_person, components)
@@ -142,7 +142,15 @@ class GraphvizGenealogyRenderer:
             levels,
         )
 
-        graph = Graph(name="genealogy", format=output_format, engine="neato")
+        # Graphviz's legacy PostScript EPS renderer is Latin-1 only and can
+        # corrupt Cyrillic labels. Cairo handles UTF-8 text correctly, so EPS
+        # is always rendered through the Cairo backend.
+        graph = Graph(
+            name="genealogy",
+            format=output_format,
+            engine="neato",
+            renderer="cairo" if output_format == "eps" else None,
+        )
         graph.attr(
             layout="neato",
             overlap="true",

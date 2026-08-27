@@ -18,9 +18,9 @@ _LETTER_RE = re.compile(r"[^\W\d_]", re.UNICODE)
 
 
 def normalize_display_text(value: str) -> str:
-    """Use a true em dash in every piece of text shown in the diagram."""
+    """Use a short en dash in every dash-like piece of displayed text."""
 
-    return value.replace("-", "—")
+    return value.replace("—", "–").replace("-", "–")
 
 
 @dataclass(frozen=True, slots=True)
