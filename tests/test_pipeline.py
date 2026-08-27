@@ -113,20 +113,26 @@ def test_excel_to_separate_eps_files(tmp_path: Path) -> None:
 
     workbook = Workbook()
     sheet = workbook.active
-    sheet.title = "Тестовая династия"
+    sheet.title = "Test dynasty"
     sheet.append(HEADERS)
-    sheet.append([1, "Родитель", None, None, None, "Ребёнок", None])
-    sheet.append([2, "Ребёнок", None, None, None, None, None])
+    sheet.append([1, "Parent", None, None, None, "Child", None])
+    sheet.append([2, "Child", None, None, None, None, None])
     workbook.save(source)
 
     rendered, warnings = BuildGenealogyUseCase().execute(source, output)
 
     assert rendered.is_dir()
-    files = tuple(rendered.glob("*.eps"))
-    assert len(files) == 1
-    eps_text = files[0].read_text(encoding="latin-1")
+    eps_files = tuple(rendered.glob("*.eps"))
+    assert len(eps_files) == 1
+    eps_text = eps_files[0].read_text(encoding="latin-1")
     assert eps_text.startswith("%!PS-Adobe")
     assert "cairo" in eps_text.casefold()
+    assert "Parent" not in eps_text
+    assert "Child" not in eps_text
+
+    preview_files = tuple(rendered.glob("*.preview.png"))
+    assert len(preview_files) == 1
+    assert preview_files[0].stat().st_size > 0
     assert warnings == ()
 
 

@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import html
 import math
+from tempfile import TemporaryDirectory
 from dataclasses import dataclass
 from itertools import pairwise
 from pathlib import Path
 from uuid import UUID, uuid4
 
+import cairosvg
 from graphviz import Graph
 
 from historical_bloodlines.domain import Genealogy, Person
@@ -145,11 +147,13 @@ class GraphvizGenealogyRenderer:
         # Graphviz's legacy PostScript EPS renderer is Latin-1 only and can
         # corrupt Cyrillic labels. Cairo handles UTF-8 text correctly, so EPS
         # is always rendered through the Cairo backend.
+        graph_output_format = "svg" if output_format == "eps" else output_format
+        graph_output_renderer = "cairo" if output_format == "eps" else None
         graph = Graph(
             name="genealogy",
-            format=output_format,
+            format=graph_output_format,
             engine="neato",
-            renderer="cairo" if output_format == "eps" else None,
+            renderer=graph_output_renderer,
         )
         graph.attr(
             layout="neato",
@@ -407,16 +411,59 @@ class GraphvizGenealogyRenderer:
         # reject non-ASCII filenames. Render under a private ASCII-only stem
         # and rename the finished artifact afterwards. The visible title and
         # the final user-facing filename remain unchanged.
+        if output_format == "eps":
+            return self._render_publisher_safe_eps(graph, output_path)
+
+        rendered = self._render_graph_artifact(
+            graph,
+            output_directory=output_path.parent,
+        )
+        rendered.replace(output_path)
+        return output_path
+
+
+    @staticmethod
+    def _render_graph_artifact(
+        graph: Graph,
+        *,
+        output_directory: Path,
+    ) -> Path:
         temporary_stem = f"bloodlines_render_{uuid4().hex}"
-        rendered = Path(
+        return Path(
             graph.render(
                 filename=temporary_stem,
-                directory=str(output_path.parent),
+                directory=str(output_directory),
                 cleanup=True,
                 neato_no_op=2,
             )
         )
-        rendered.replace(output_path)
+
+    def _render_publisher_safe_eps(self, graph: Graph, output_path: Path) -> Path:
+        """Create an EPS whose text is outlined before conversion.
+
+        Direct Graphviz EPS output leaves live PostScript text whose font
+        handling varies between Illustrator, Inkscape and Ghostscript.  To
+        guarantee stable Cyrillic and Roman numerals for publishers, EPS is
+        produced through an intermediate ``svg:cairo`` artifact where every
+        glyph has already been converted to vector paths.
+        """
+
+        try:
+            with TemporaryDirectory(prefix="bloodlines_eps_") as temporary_directory:
+                temporary_path = Path(temporary_directory)
+                outlined_svg = self._render_graph_artifact(
+                    graph,
+                    output_directory=temporary_path,
+                )
+                cairosvg.svg2eps(
+                    url=str(outlined_svg),
+                    write_to=str(output_path),
+                )
+        except Exception as exc:  # pragma: no cover - defensive wrapping
+            raise RuntimeError(
+                "Publisher EPS export failed. "
+                "SVG→EPS conversion could not be completed."
+            ) from exc
         return output_path
 
 

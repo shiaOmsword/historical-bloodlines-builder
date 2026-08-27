@@ -137,6 +137,15 @@ class BuildGenealogyUseCase:
                 page_path,
                 title=sheet.display_title,
             )
+            if output_path.suffix.casefold() == ".eps":
+                preview_path = output_directory / (
+                    f"{index:03d}_{self._slug(sheet.display_title)}.preview.png"
+                )
+                self._renderer.render(
+                    genealogy,
+                    preview_path,
+                    title=sheet.display_title,
+                )
 
         return BuildResult(output_path=output_directory, warnings=tuple(warnings))
 

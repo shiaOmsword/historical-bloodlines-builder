@@ -40,8 +40,11 @@ def run_self_test(console: Console) -> int:
                 temporary_path / "self-test.eps",
             )
             eps_files = tuple(eps_result.output_path.glob("*.eps"))
+            preview_files = tuple(eps_result.output_path.glob("*.preview.png"))
             if not eps_files or any(path.stat().st_size == 0 for path in eps_files):
                 raise RuntimeError("Тестовый EPS не был создан.")
+            if not preview_files or any(path.stat().st_size == 0 for path in preview_files):
+                raise RuntimeError("Тестовый PNG-preview для EPS не был создан.")
     except Exception as exc:
         console.print(
             Panel(
