@@ -1,0 +1,326 @@
+--- a/src/historical_bloodlines/infrastructure/graph/renderer.py
++++ b/src/historical_bloodlines/infrastructure/graph/renderer.py
+@@ -2,13 +2,15 @@
+ 
+ import html
+ import math
+-from tempfile import TemporaryDirectory
++import os
++import shutil
++import subprocess
+ from dataclasses import dataclass
+ from itertools import pairwise
+ from pathlib import Path
++from tempfile import TemporaryDirectory
+ from uuid import UUID, uuid4
+ 
+-import cairosvg
+ from graphviz import Graph
+ 
+ from historical_bloodlines.domain import Genealogy, Person
+@@ -32,16 +34,14 @@
+             levels,
+         )
+ 
+-        # Graphviz's legacy PostScript EPS renderer is Latin-1 only and can
+-        # corrupt Cyrillic labels. Cairo handles UTF-8 text correctly, so EPS
+-        # is always rendered through the Cairo backend.
+-        graph_output_format = "svg" if output_format == "eps" else output_format
+-        graph_output_renderer = "cairo" if output_format == "eps" else None
++        # Publisher EPS starts from the same PDF backend that already gives us
++        # the correct glyph shapes, kerning and Unicode text. Ghostscript later
++        # converts those PDF glyphs to vector linework without emitting fonts.
++        graph_output_format = "pdf" if output_format == "eps" else output_format
+         graph = Graph(
+             name="genealogy",
+             format=graph_output_format,
+             engine="neato",
+-            renderer=graph_output_renderer,
+         )
+         graph.attr(
+             layout="neato",
+@@ -67,33 +67,146 @@
+         )
+ 
+     def _render_publisher_safe_eps(self, graph: Graph, output_path: Path) -> Path:
+-        """Create an EPS whose text is outlined before conversion.
++        """Create publisher EPS by outlining the proven Graphviz PDF output.
+ 
+-        Direct Graphviz EPS output leaves live PostScript text whose font
+-        handling varies between Illustrator, Inkscape and Ghostscript.  To
+-        guarantee stable Cyrillic and Roman numerals for publishers, EPS is
+-        produced through an intermediate ``svg:cairo`` artifact where every
+-        glyph has already been converted to vector paths.
++        Direct Graphviz EPS output leaves live PostScript fonts, while the old
++        ``svg:cairo -> CairoSVG -> EPS`` route converts text too early and may
++        produce glyph geometry that differs from a normal font outline in
++        Illustrator. The PDF backend already renders the typography correctly.
++
++        Ghostscript ``eps2write`` with ``-dNoOutputFonts`` then writes the PDF
++        glyphs as vector linework. This preserves the PDF metrics while leaving
++        no live font resources in the production EPS.
+         """
+ 
++        ghostscript = self._find_ghostscript_executable()
+         try:
+             with TemporaryDirectory(prefix="bloodlines_eps_") as temporary_directory:
+                 temporary_path = Path(temporary_directory)
+-                outlined_svg = self._render_graph_artifact(
++                source_pdf = self._render_graph_artifact(
+                     graph,
+                     output_directory=temporary_path,
+                 )
+-                cairosvg.svg2eps(
+-                    url=str(outlined_svg),
+-                    write_to=str(output_path),
++                temporary_eps = temporary_path / "publisher_outlined.eps"
++
++                completed = subprocess.run(
++                    [
++                        str(ghostscript),
++                        "-dBATCH",
++                        "-dNOPAUSE",
++                        "-dSAFER",
++                        "-q",
++                        "-sDEVICE=eps2write",
++                        "-dNoOutputFonts",
++                        f"-sOutputFile={temporary_eps}",
++                        str(source_pdf),
++                    ],
++                    check=False,
++                    stdout=subprocess.PIPE,
++                    stderr=subprocess.PIPE,
++                    text=True,
++                    errors="replace",
+                 )
++                if completed.returncode != 0:
++                    details = (completed.stderr or completed.stdout).strip()
++                    if details:
++                        details = f" Ghostscript: {details[-2000:]}"
++                    raise RuntimeError(
++                        "Publisher EPS export failed while Ghostscript was "
++                        f"converting PDF to outlined EPS.{details}"
++                    )
++
++                self._validate_outlined_eps(temporary_eps)
++
++                # TemporaryDirectory can live on another Windows drive. Use a
++                # copy instead of os.replace so D:\output works with C:\TEMP.
++                shutil.copyfile(temporary_eps, output_path)
++        except RuntimeError:
++            raise
+         except Exception as exc:  # pragma: no cover - defensive wrapping
+             raise RuntimeError(
+                 "Publisher EPS export failed. "
+-                "SVG→EPS conversion could not be completed."
++                "PDF→Ghostscript EPS conversion could not be completed."
+             ) from exc
+         return output_path
+ 
++    @staticmethod
++    def _find_ghostscript_executable() -> Path:
++        """Locate Ghostscript on Linux/macOS and common Windows installs."""
++
++        override = os.environ.get("GHOSTSCRIPT_EXE")
++        if override:
++            override_path = Path(override).expanduser()
++            if override_path.is_file():
++                return override_path
++            resolved_override = shutil.which(override)
++            if resolved_override:
++                return Path(resolved_override)
++            raise RuntimeError(
++                "GHOSTSCRIPT_EXE is set but does not point to a Ghostscript "
++                f"executable: {override}"
++            )
++
++        for executable_name in ("gswin64c.exe", "gswin32c.exe", "gs"):
++            resolved = shutil.which(executable_name)
++            if resolved:
++                return Path(resolved)
++
++        windows_candidates: list[Path] = []
++        for environment_name in ("ProgramFiles", "ProgramFiles(x86)"):
++            program_files = os.environ.get(environment_name)
++            if not program_files:
++                continue
++            ghostscript_root = Path(program_files) / "gs"
++            if not ghostscript_root.is_dir():
++                continue
++            windows_candidates.extend(
++                ghostscript_root.glob("gs*/bin/gswin64c.exe")
++            )
++            windows_candidates.extend(
++                ghostscript_root.glob("gs*/bin/gswin32c.exe")
++            )
++
++        existing_candidates = [
++            candidate for candidate in windows_candidates if candidate.is_file()
++        ]
++        if existing_candidates:
++            # Multiple Ghostscript versions may coexist. The most recently
++            # installed executable is the safest default; GHOSTSCRIPT_EXE can
++            # always override it explicitly.
++            return max(
++                existing_candidates,
++                key=lambda candidate: candidate.stat().st_mtime_ns,
++            )
++
++        raise RuntimeError(
++            "Publisher EPS export requires Ghostscript. Install Ghostscript "
++            "and make gs/gswin64c available in PATH, or set GHOSTSCRIPT_EXE "
++            "to the full executable path."
++        )
++
++    @staticmethod
++    def _validate_outlined_eps(eps_path: Path) -> None:
++        """Reject empty/non-EPS output or EPS that still declares font data."""
++
++        if not eps_path.is_file() or eps_path.stat().st_size == 0:
++            raise RuntimeError("Ghostscript did not create a non-empty EPS file.")
++
++        eps_bytes = eps_path.read_bytes()
++        if not eps_bytes.startswith(b"%!PS-Adobe"):
++            raise RuntimeError("Ghostscript output is not a valid Adobe EPS file.")
++
++        font_resource_markers = (
++            b"%%BeginResource: font",
++            b"%%IncludeResource: font",
++            b"%%DocumentNeededResources: font",
++        )
++        if any(marker in eps_bytes for marker in font_resource_markers):
++            raise RuntimeError(
++                "Ghostscript EPS still declares font resources; publisher "
++                "outline safety check failed."
++            )
++
+ 
+     def _family_bus_ys(
+         self,
+--- a/tests/test_pipeline.py
++++ b/tests/test_pipeline.py
+@@ -1,3 +1,4 @@
++import subprocess
+ from pathlib import Path
+ 
+ import pytest
+@@ -25,9 +26,41 @@
+     assert len(eps_files) == 1
+     eps_text = eps_files[0].read_text(encoding="latin-1")
+     assert eps_text.startswith("%!PS-Adobe")
+-    assert "cairo" in eps_text.casefold()
++    assert "ghostscript" in eps_text.casefold()
++    assert "-dnooutputfonts" in eps_text.casefold()
+     assert "Parent" not in eps_text
+     assert "Child" not in eps_text
++    assert "%%BeginResource: font" not in eps_text
++    assert "%%IncludeResource: font" not in eps_text
++    assert "%%DocumentNeededResources: font" not in eps_text
++
++    # Stronger production check: ask Ghostscript to read our EPS back into PDF
++    # and confirm that the resulting page has no PDF /Font resources at all.
++    from historical_bloodlines.infrastructure.graph.renderer import (
++        GraphvizGenealogyRenderer,
++    )
++
++    roundtrip_pdf = tmp_path / "eps_roundtrip.pdf"
++    ghostscript = GraphvizGenealogyRenderer._find_ghostscript_executable()
++    subprocess.run(
++        [
++            str(ghostscript),
++            "-dBATCH",
++            "-dNOPAUSE",
++            "-dSAFER",
++            "-q",
++            "-dEPSCrop",
++            "-sDEVICE=pdfwrite",
++            f"-sOutputFile={roundtrip_pdf}",
++            str(eps_files[0]),
++        ],
++        check=True,
++    )
++    roundtrip_page = PdfReader(str(roundtrip_pdf)).pages[0]
++    resources = roundtrip_page.get("/Resources")
++    if resources is not None:
++        resources = resources.get_object()
++        assert resources.get("/Font") is None
+ 
+     preview_files = tuple(rendered.glob("*.preview.png"))
+     assert len(preview_files) == 1
+--- a/.github/workflows/tests.yml
++++ b/.github/workflows/tests.yml
+@@ -3,8 +3,8 @@
+         with:
+           python-version: ${{ matrix.python-version }}
+ 
+-      - name: Install system Graphviz
+-        run: sudo apt-get update && sudo apt-get install --yes graphviz
++      - name: Install Graphviz and Ghostscript
++        run: sudo apt-get update && sudo apt-get install --yes graphviz ghostscript
+ 
+       - name: Install project
+         run: |
+--- a/README.md
++++ b/README.md
+@@ -1,7 +1,7 @@
+ - отдельная родословная для каждого листа Excel;
+ - A5 landscape по умолчанию для книжной печати;
+ - A4 landscape через параметр CLI;
+-- PDF, SVG и PNG;
++- PDF, SVG, PNG и издательский EPS;
+ - поддержка нескольких браков и одноимённых людей;
+ - один визуальный узел на человека без дублирования в разных ветвях;
+ - терминальные подписи ветвей, даже если для них нет отдельной строки Excel;
+@@ -19,6 +19,7 @@
+ - Python 3.12 или новее;
+ - Poetry;
+ - системный Graphviz: команды `dot` и `neato` должны быть доступны в `PATH`.
++- Ghostscript для экспорта EPS. Для PDF/SVG/PNG он не требуется.
+ 
+ Проверка Graphviz:
+ 
+@@ -27,6 +28,16 @@
+ neato -V
+ ```
+ 
++Проверка Ghostscript:
++
++```powershell
++gswin64c -version
++```
++
++В Linux/macOS команда обычно называется `gs`. На Windows программа также ищет
++Ghostscript в стандартном `C:\Program Files\gs\...`. При необходимости полный
++путь можно явно задать переменной окружения `GHOSTSCRIPT_EXE`.
++
+ ### Установка Graphviz
+ 
+ Windows: установите Graphviz, добавьте каталог `bin` в `PATH` и перезапустите
+@@ -47,8 +58,14 @@
+ poetry run bloodlines -i data/input/input.xlsx -o data/output/genealogy.eps
+ ```
+ 
+-EPS рендерится через Cairo backend Graphviz, чтобы кириллица и Unicode не
+-ломались в PostScript-выводе.
++Для EPS программа сначала получает обычный векторный PDF через Graphviz — тот же
++backend, который уже даёт корректные кириллицу, интервалы и форму glyphs. Затем
++Ghostscript `eps2write` с флагом `-dNoOutputFonts` переводит текст PDF в
++векторные контуры и создаёт EPS. Это не растровая трассировка: glyphs остаются
++векторной геометрией, но в production-EPS больше нет живых шрифтов, которые
++Illustrator мог бы заменить или неверно декодировать.
++
++Рядом с каждым EPS по-прежнему создаётся `.preview.png` для визуальной сверки.
+ 
+ Если в книге несколько заполненных листов, SVG, PNG и EPS сохраняются в отдельный
+ каталог:
+@@ -67,6 +84,10 @@
+ Graphviz neato -n2
+     ↓
+ PDF / SVG / PNG
++    ↓ (только для издательского EPS)
++Ghostscript eps2write -dNoOutputFonts
++    ↓
++EPS с текстом в векторных контурах
+ ```
+ 
+ DTO переносят данные между этапами.
