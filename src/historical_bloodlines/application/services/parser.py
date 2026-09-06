@@ -38,6 +38,11 @@ class GenealogyRowParser:
                 field_name="Порядок в поколении",
                 row=row,
             ),
+            note=(
+                self._normalize_text(row.note_raw)
+                if row.note_raw and row.note_raw.strip()
+                else None
+            ),
         )
 
     @staticmethod

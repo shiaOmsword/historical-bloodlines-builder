@@ -15,6 +15,7 @@ class RawGenealogyRowDTO:
     spouses_raw: str | None
     generation_raw: int | float | str | None = None
     generation_order_raw: int | float | str | None = None
+    note_raw: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -43,3 +44,4 @@ class ParsedGenealogyRowDTO:
     spouses: tuple[PersonReferenceDTO, ...]
     layout_generation: int | None = None
     layout_order: int | None = None
+    note: str | None = None

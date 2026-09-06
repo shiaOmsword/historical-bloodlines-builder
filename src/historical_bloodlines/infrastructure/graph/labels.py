@@ -55,7 +55,6 @@ class PersonLabelFormatter:
             height=height,
         )
 
-
     def _name_lines(self, person: Person) -> tuple[str, ...]:
         """Format terminal punctuation independently from the Excel value.
 
@@ -63,9 +62,15 @@ class PersonLabelFormatter:
         They are removed first, then restored only when the ``Титул`` column
         contains an actual textual title. A chronology-only value such as
         ``862-879`` or ``ум. 1376`` therefore never produces a comma.
+
+        A person with an attached footnote receives a compact ``*`` marker in
+        the name. The footnote text itself is rendered separately below the
+        genealogy and therefore does not affect the person's box height.
         """
 
         clean_name = _TRAILING_COMMA_RE.sub("", person.name).rstrip()
+        if person.note and not clean_name.endswith("*"):
+            clean_name = f"{clean_name}*"
         if self._has_textual_title(person):
             clean_name = f"{clean_name},"
         return self.wrap_name(clean_name)

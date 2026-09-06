@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import html
 import math
+import textwrap
 from tempfile import TemporaryDirectory
 from dataclasses import dataclass
 from itertools import pairwise
@@ -54,6 +55,10 @@ class GraphvizGenealogyRenderer:
     LINE_HEIGHT = 14.2
     TEXT_PADDING_X = 4.0
     TEXT_PADDING_Y = 1.5
+    NOTE_FONT_SIZE = 9.0
+    NOTE_LINE_HEIGHT = 10.5
+    NOTE_TOP_GAP = 16.0
+    NOTE_BOTTOM_GAP = 8.0
 
     # Compact book-like spacing. The final PDF page is normalized to the
     # selected landscape paper size, so wasted space only shrinks the text.
@@ -143,6 +148,41 @@ class GraphvizGenealogyRenderer:
             component_centers,
             levels,
         )
+
+        # Notes are table-level footnotes, not part of a person's label box.
+        # Reserve a compact block below the genealogy and keep the overall
+        # canvas landscape so the final PDF composer does not over-shrink it.
+        footnote_lines = self._footnote_lines(genealogy, page_width)
+        footnote_center_y: float | None = None
+        if footnote_lines:
+            footnote_height = max(
+                self.NOTE_LINE_HEIGHT,
+                len(footnote_lines) * self.NOTE_LINE_HEIGHT,
+            )
+            footnote_top = (
+                page_height - self.PAGE_MARGIN_Y + self.NOTE_TOP_GAP
+            )
+            footnote_center_y = footnote_top + footnote_height / 2
+            page_height = (
+                footnote_top + footnote_height + self.NOTE_BOTTOM_GAP
+            )
+
+            required_page_width = max(
+                page_width,
+                page_height * self.MIN_LANDSCAPE_RATIO,
+            )
+            if required_page_width > page_width + 0.05:
+                shift_x = (required_page_width - page_width) / 2
+                person_positions = {
+                    person_id: PersonPosition(
+                        center_x=position.center_x + shift_x,
+                        top_y=position.top_y,
+                        width=position.width,
+                        height=position.height,
+                    )
+                    for person_id, position in person_positions.items()
+                }
+                page_width = required_page_width
 
         # Graphviz's legacy PostScript EPS renderer is Latin-1 only and can
         # corrupt Cyrillic labels. Cairo handles UTF-8 text correctly, so EPS
@@ -258,6 +298,31 @@ class GraphvizGenealogyRenderer:
             fontname=self.FONT_FAMILY,
         )
 
+        if footnote_center_y is not None:
+            footnote_rows = "".join(
+                (
+                    '<TR><TD ALIGN="LEFT">'
+                    f'<FONT POINT-SIZE="{self.NOTE_FONT_SIZE:g}">'
+                    f"{html.escape(line)}</FONT></TD></TR>"
+                )
+                for line in footnote_lines
+            )
+            graph.node(
+                "footnotes",
+                label=(
+                    '<<TABLE BORDER="0" CELLBORDER="0" CELLSPACING="0" '
+                    f'CELLPADDING="0">{footnote_rows}</TABLE>>'
+                ),
+                pos=(
+                    f"{page_width / 2:.3f},"
+                    f"{graph_y(footnote_center_y):.3f}!"
+                ),
+                shape="plain",
+                fontname=self.FONT_FAMILY,
+                fontsize=str(self.NOTE_FONT_SIZE),
+                margin="0",
+            )
+
         for person in genealogy.persons.values():
             position = person_positions[person.id]
             graph.node(
@@ -285,8 +350,16 @@ class GraphvizGenealogyRenderer:
                 person_a_id, person_b_id = person_b_id, person_a_id
                 pos_a, pos_b = pos_b, pos_a
 
-            name_y_a = pos_a.top_y + self.LINE_HEIGHT * 0.58
-            name_y_b = pos_b.top_y + self.LINE_HEIGHT * 0.58
+            # The sign is aligned to the visual centre of the first name line.
+            # Top-aligning the generation already gives both spouses one name
+            # baseline; using padding + half a line is more accurate than a
+            # magic fraction of the line height.
+            name_y_a = (
+                pos_a.top_y + self.TEXT_PADDING_Y + self.LINE_HEIGHT / 2
+            )
+            name_y_b = (
+                pos_b.top_y + self.TEXT_PADDING_Y + self.LINE_HEIGHT / 2
+            )
             line_y = self._snap_coordinate((name_y_a + name_y_b) / 2)
             upper_line_y, lower_line_y = self._marriage_line_ys(line_y)
             gap_left_x = pos_a.right + 5.0
@@ -303,11 +376,10 @@ class GraphvizGenealogyRenderer:
             for family in families:
                 if len(family.parent_ids) != 2 or frozenset(family.parent_ids) != pair:
                     continue
-                source_x = (left_x + right_x) / 2
-                if len(family.child_ids) == 1:
-                    only_child_x = person_positions[family.child_ids[0]].center_x
-                    if left_x - 0.5 <= only_child_x <= right_x + 0.5:
-                        source_x = only_child_x
+                # Descendant stems always leave the exact centre of the sign.
+                # Previously an only child could snap this junction to one edge
+                # after horizontal stretching, which made the "=" look skewed.
+                source_x = self._marriage_stem_x(left_x, right_x)
                 junction_xs.append(source_x)
 
             # Two parallel strokes form the conventional genealogical "="
@@ -350,15 +422,7 @@ class GraphvizGenealogyRenderer:
                 else:
                     left_x, right_x, marriage_y = connector
 
-                source_x = (left_x + right_x) / 2
-                # For an only child, branch vertically from its x-coordinate
-                # whenever that point lies on the marriage line. This removes
-                # a purely cosmetic one-step elbow without moving any person.
-                if len(children) == 1:
-                    only_child_x = person_positions[children[0]].center_x
-                    if left_x - 0.5 <= only_child_x <= right_x + 0.5:
-                        source_x = only_child_x
-
+                source_x = self._marriage_stem_x(left_x, right_x)
                 source_y = max(
                     person_positions[parent_id].bottom
                     for parent_id in family.parent_ids
@@ -387,7 +451,7 @@ class GraphvizGenealogyRenderer:
                 connection_x, routed_segments = child_routes[0]
                 child_x = child_xs[0]
                 if (
-                    math.isclose(source_x, child_x, abs_tol=2.0)
+                    math.isclose(source_x, child_x, abs_tol=0.05)
                     and math.isclose(connection_x, child_x, abs_tol=0.05)
                 ):
                     segment(source_x, source_y, child_x, child_top)
@@ -420,7 +484,6 @@ class GraphvizGenealogyRenderer:
         )
         rendered.replace(output_path)
         return output_path
-
 
     @staticmethod
     def _render_graph_artifact(
@@ -466,7 +529,6 @@ class GraphvizGenealogyRenderer:
             ) from exc
         return output_path
 
-
     def _family_bus_ys(
         self,
         families: tuple[FamilyView, ...],
@@ -505,11 +567,7 @@ class GraphvizGenealogyRenderer:
                     )
                 else:
                     left_x, right_x, _ = connector
-                    source_x = (left_x + right_x) / 2
-                    if len(children) == 1:
-                        only_child_x = person_positions[children[0]].center_x
-                        if left_x - 0.5 <= only_child_x <= right_x + 0.5:
-                            source_x = only_child_x
+                    source_x = self._marriage_stem_x(left_x, right_x)
 
                 source_y = max(
                     person_positions[parent_id].bottom
@@ -905,6 +963,41 @@ class GraphvizGenealogyRenderer:
             levels,
         )
 
+    def _footnote_lines(
+        self,
+        genealogy: Genealogy,
+        page_width: float,
+    ) -> tuple[str, ...]:
+        noted_people = sorted(
+            (person for person in genealogy.persons.values() if person.note),
+            key=lambda person: person.source_key.row_number,
+        )
+        if not noted_people:
+            return ()
+
+        available_width = max(
+            120.0,
+            page_width - self.PAGE_MARGIN_X * 2,
+        )
+        chars_per_line = max(
+            48,
+            int(available_width / (self.NOTE_FONT_SIZE * 0.57)),
+        )
+        lines: list[str] = []
+        for person in noted_people:
+            note = normalize_display_text(" ".join((person.note or "").split()))
+            if not note.startswith("*"):
+                note = f"* {note}"
+            wrapped = textwrap.wrap(
+                note,
+                width=chars_per_line,
+                break_long_words=False,
+                break_on_hyphens=False,
+                subsequent_indent="  ",
+            )
+            lines.extend(wrapped or [note])
+        return tuple(lines)
+
     def _person_box(self, person: Person) -> PersonBox:
         return self._labels.measure(person)
 
@@ -933,6 +1026,12 @@ class GraphvizGenealogyRenderer:
         sign_width = min(cls.MARRIAGE_SIGN_WIDTH, right_boundary - left_boundary)
         half_width = sign_width / 2
         return cls._snap_coordinate(center_x - half_width), cls._snap_coordinate(center_x + half_width)
+
+    @classmethod
+    def _marriage_stem_x(cls, left_x: float, right_x: float) -> float:
+        """Return the exact centre used by every descendant marriage stem."""
+
+        return cls._snap_coordinate((left_x + right_x) / 2)
 
     @staticmethod
     def _snap_coordinate(value: float) -> float:

@@ -92,6 +92,7 @@ class Person:
     dynasty: str | None = None
     titles: tuple[str, ...] = ()
     reign_periods: tuple[ReignPeriod, ...] = ()
+    note: str | None = None
     is_placeholder: bool = False
     layout_hint: PersonLayoutHint = field(default_factory=PersonLayoutHint)
 
@@ -104,12 +105,14 @@ class Person:
         dynasty: str | None = None,
         titles: tuple[str, ...] = (),
         reign_periods: tuple[ReignPeriod, ...] = (),
+        note: str | None = None,
         is_placeholder: bool = False,
         layout_hint: PersonLayoutHint | None = None,
     ) -> Person:
         normalized_name = " ".join(name.split())
         if not normalized_name:
             raise ValueError("Person name cannot be empty")
+        normalized_note = " ".join(note.split()) if note and note.strip() else None
         return cls(
             id=source_key.stable_id(),
             source_key=source_key,
@@ -121,6 +124,7 @@ class Person:
                 if (normalized_title := normalize_title(title))
             ),
             reign_periods=reign_periods,
+            note=normalized_note,
             is_placeholder=is_placeholder,
             layout_hint=layout_hint or PersonLayoutHint(),
         )
