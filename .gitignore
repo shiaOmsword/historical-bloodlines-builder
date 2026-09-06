@@ -20,8 +20,12 @@ Thumbs.db
 # Runtime input/output
 /data/input/*
 /data/output/*
+/data/telegram/*
 !/data/input/.gitkeep
 !/data/output/.gitkeep
+
+# Private proxy configuration
+deploy/proxy/config.json
 
 # Generated document formats
 *.pdf
