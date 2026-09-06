@@ -24,15 +24,20 @@ git clone https://github.com/shiaOmsword/historical-bloodlines-builder.git
 cd historical-bloodlines-builder
 ```
 
-Create the local Compose environment file and set the UID/GID of the account that owns the checkout:
+Initialize the Compose environment with the actual UID/GID of the account that owns the checkout:
 
 ```bash
-cp .env.example .env
-id -u
-id -g
+sh scripts/init_vps.sh
 ```
 
-For the common Ubuntu first user both values are usually `1000`, which already matches `.env.example`. Change them if your server account uses different values.
+This writes `.env` using `id -u` and `id -g`, creates `data/input` and `data/output`, and verifies that the current user can write there.
+
+If the checkout was previously created or modified as root and initialization reports a permissions problem, fix ownership once:
+
+```bash
+sudo chown -R "$USER":"$(id -gn)" /opt/apps/historical-bloodlines-builder
+sh scripts/init_vps.sh
+```
 
 Build the image:
 
@@ -45,6 +50,8 @@ Run the full container smoke test:
 ```bash
 sh scripts/docker_smoke.sh
 ```
+
+The smoke script also exports the current host UID/GID before starting Compose, so stale `.env` values cannot make the bind-mounted output read-only.
 
 A successful smoke test proves that the container can:
 
@@ -89,6 +96,7 @@ The host receives generated files under `data/output` because `./data` is mounte
 cd /opt/apps/historical-bloodlines-builder
 git checkout main
 git pull --ff-only origin main
+sh scripts/init_vps.sh
 docker compose build renderer
 sh scripts/docker_smoke.sh
 ```
