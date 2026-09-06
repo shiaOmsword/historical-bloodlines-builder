@@ -1,9 +1,21 @@
 #!/usr/bin/env sh
 set -eu
 
+# Always run the smoke container as the user who owns this checkout. This
+# overrides stale or copied .env values and keeps bind-mounted output writable.
+export BLOODLINES_UID="$(id -u)"
+export BLOODLINES_GID="$(id -g)"
+
 mkdir -p data/input data/output
 cp examples/input.example.xlsx data/input/smoke.xlsx
 rm -rf data/output/smoke data/output/smoke.pdf
+
+if [ ! -w data/output ]; then
+  echo "Docker smoke failed: data/output is not writable by $(id -un) (${BLOODLINES_UID}:${BLOODLINES_GID})" >&2
+  echo "Fix checkout ownership, for example:" >&2
+  echo "  sudo chown -R $(id -un):$(id -gn) $(pwd)" >&2
+  exit 1
+fi
 
 docker compose build renderer
 
