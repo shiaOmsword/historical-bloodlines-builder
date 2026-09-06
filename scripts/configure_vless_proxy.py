@@ -3,9 +3,13 @@ from __future__ import annotations
 import argparse
 import getpass
 import json
+import sys
 from pathlib import Path
 
-from historical_bloodlines.presentation.telegram.vless import (
+REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(REPOSITORY_ROOT / "src"))
+
+from historical_bloodlines.presentation.telegram.vless import (  # noqa: E402
     vless_uri_to_sing_box_config,
 )
 
