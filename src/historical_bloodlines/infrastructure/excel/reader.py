@@ -20,6 +20,7 @@ class ExcelGenealogyReader:
     OPTIONAL_HEADERS = {
         "Поколение": "generation_raw",
         "Порядок в поколении": "generation_order_raw",
+        "Примечание": "note_raw",
     }
     TITLE_HEADER = "Название"
 
@@ -127,10 +128,13 @@ class ExcelGenealogyReader:
                         values,
                         header_index.get("Порядок в поколении"),
                     ),
+                    note_raw=self._optional_text(
+                        values,
+                        header_index.get("Примечание"),
+                    ),
                 )
             )
         return display_title, tuple(rows)
-
 
     @staticmethod
     def _parse_source_number(
@@ -192,7 +196,13 @@ class ExcelGenealogyReader:
         return values[index] if index < len(values) else None
 
     @classmethod
-    def _optional_text(cls, values: tuple[object, ...], index: int) -> str | None:
+    def _optional_text(
+        cls,
+        values: tuple[object, ...],
+        index: int | None,
+    ) -> str | None:
+        if index is None:
+            return None
         value = cls._value(values, index)
         return None if value in (None, "") else str(value)
 
