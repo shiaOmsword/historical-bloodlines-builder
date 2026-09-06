@@ -123,6 +123,7 @@ class GenealogyAssembler:
                 dynasty=row.dynasty,
                 titles=row.titles,
                 reign_periods=row.reign_periods,
+                note=row.note,
                 layout_hint=PersonLayoutHint(
                     generation=row.layout_generation,
                     order=row.layout_order,
