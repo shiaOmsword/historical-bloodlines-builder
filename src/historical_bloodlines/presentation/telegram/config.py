@@ -33,11 +33,7 @@ class TelegramBotSettings:
     max_upload_bytes: int = 20 * 1024 * 1024
 
     def is_allowed(self, user_id: int | None) -> bool:
-        if user_id is None:
-            return False
-        if not self.allowed_user_ids:
-            return True
-        return user_id in self.allowed_user_ids
+        return user_id is not None and user_id in self.allowed_user_ids
 
 
 def load_telegram_bot_settings() -> TelegramBotSettings:
@@ -48,6 +44,11 @@ def load_telegram_bot_settings() -> TelegramBotSettings:
     allowed_user_ids = _parse_allowed_user_ids(
         os.getenv("TELEGRAM_ALLOWED_USER_IDS", "")
     )
+    if not allowed_user_ids:
+        raise TelegramBotConfigurationError(
+            "TELEGRAM_ALLOWED_USER_IDS must contain at least one Telegram user ID"
+        )
+
     proxy_url = os.getenv("TELEGRAM_PROXY_URL", "").strip() or None
     work_directory = Path(
         os.getenv("TELEGRAM_WORK_DIR", "/data/telegram")
