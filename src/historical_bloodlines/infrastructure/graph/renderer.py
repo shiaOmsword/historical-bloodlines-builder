@@ -451,7 +451,7 @@ class GraphvizGenealogyRenderer:
                 connection_x, routed_segments = child_routes[0]
                 child_x = child_xs[0]
                 if (
-                    math.isclose(source_x, child_x, abs_tol=2.0)
+                    math.isclose(source_x, child_x, abs_tol=0.05)
                     and math.isclose(connection_x, child_x, abs_tol=0.05)
                 ):
                     segment(source_x, source_y, child_x, child_top)
