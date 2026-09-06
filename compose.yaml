@@ -1,0 +1,12 @@
+services:
+  renderer:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: historical-bloodlines:local
+    environment:
+      BLOODLINES_DATA_DIR: /data
+      HOME: /tmp
+    user: "${BLOODLINES_UID:-1000}:${BLOODLINES_GID:-1000}"
+    volumes:
+      - ./data:/data
