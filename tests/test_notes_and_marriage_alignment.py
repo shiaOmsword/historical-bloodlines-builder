@@ -58,7 +58,9 @@ def test_note_is_rendered_as_table_footnote_and_marks_person(tmp_path: Path) -> 
 
     assert warnings == ()
     svg = next(rendered.glob("*.svg")).read_text(encoding="utf-8")
-    assert "Генрих VII Тюдор*" in svg
+    # The name may wrap between "VII" and "Тюдор*" in the SVG, so assert the
+    # actual marked final name line rather than one unwrapped text node.
+    assert "Тюдор*" in svg
     assert "Примечание Генриха Тюдора." in svg
 
 
