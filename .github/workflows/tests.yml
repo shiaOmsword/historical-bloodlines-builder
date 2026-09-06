@@ -30,3 +30,12 @@ jobs:
 
       - name: Run tests
         run: pytest -q
+
+  docker-smoke:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Run Docker renderer smoke test
+        run: sh scripts/docker_smoke.sh
