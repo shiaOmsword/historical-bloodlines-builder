@@ -28,16 +28,20 @@ WORKDIR /app
 COPY pyproject.toml poetry.lock README.md LICENSE ./
 RUN poetry install --only main --no-root --no-ansi
 
+COPY requirements-bot.txt ./
+RUN python -m pip install --no-cache-dir -r requirements-bot.txt
+
 COPY src ./src
 COPY examples ./examples
 RUN poetry install --only main --no-ansi
 
-RUN mkdir -p /data/input /data/output \
+RUN mkdir -p /data/input /data/output /data/telegram \
     && fc-cache -f \
     && dot -V \
     && neato -V \
     && fc-match Sans \
-    && python -c "import cairosvg; print('CairoSVG', cairosvg.__version__)"
+    && python -c "import cairosvg; print('CairoSVG', cairosvg.__version__)" \
+    && python -c "import aiogram; print('aiogram', aiogram.__version__)"
 
 ENTRYPOINT ["bloodlines"]
 CMD ["--help"]

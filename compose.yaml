@@ -10,3 +10,28 @@ services:
     user: "${BLOODLINES_UID:-1000}:${BLOODLINES_GID:-1000}"
     volumes:
       - ./data:/data
+
+  bot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: historical-bloodlines:local
+    entrypoint: ["python", "-m", "historical_bloodlines.presentation.telegram.bot"]
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      BLOODLINES_DATA_DIR: /data
+      TELEGRAM_WORK_DIR: /data/telegram
+      HOME: /tmp
+    user: "${BLOODLINES_UID:-1000}:${BLOODLINES_GID:-1000}"
+    volumes:
+      - ./data:/data
+
+  proxy:
+    image: ghcr.io/sagernet/sing-box:v1.14.0
+    profiles: ["proxy"]
+    restart: unless-stopped
+    command: ["run", "-c", "/etc/sing-box/config.json"]
+    volumes:
+      - ./deploy/proxy/config.json:/etc/sing-box/config.json:ro
