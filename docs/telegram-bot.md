@@ -12,15 +12,15 @@ It accepts one `.xlsx` workbook and returns:
 cd /opt/apps/historical-bloodlines-builder
 git checkout main
 git pull --ff-only origin main
-sh scripts/init_vps.sh
+make init
 ```
 
-`init_vps.sh` updates only `BLOODLINES_UID` / `BLOODLINES_GID` and preserves existing Telegram/proxy settings in `.env`.
+`make init` updates only `BLOODLINES_UID` / `BLOODLINES_GID` and preserves existing Telegram/proxy settings in `.env`.
 
-## 2. Create a Telegram bot
+## 2. Configure Telegram access
 
 Create a bot with BotFather and copy its token.
-Find your numeric Telegram user ID and put both values into `.env`:
+Find the numeric Telegram user IDs of everyone who should be allowed to use the bot and put them into `.env`:
 
 ```dotenv
 TELEGRAM_BOT_TOKEN=123456:replace-me
@@ -28,13 +28,21 @@ TELEGRAM_ALLOWED_USER_IDS=123456789
 TELEGRAM_MAX_UPLOAD_MB=20
 ```
 
-Several allowed users can be comma-separated:
+Several allowed users are comma-separated:
 
 ```dotenv
-TELEGRAM_ALLOWED_USER_IDS=123456789,987654321
+TELEGRAM_ALLOWED_USER_IDS=123456789,987654321,555555555
 ```
 
 The allowlist is mandatory. The bot refuses to start if it is empty.
+
+After changing `TELEGRAM_ALLOWED_USER_IDS`, `TELEGRAM_BOT_TOKEN`, proxy settings or any other `.env` value, recreate the bot container so Compose reloads the environment:
+
+```bash
+make recreate-bot
+```
+
+A plain `make restart-bot` restarts the existing container with its current environment and does not reload changed `.env` values.
 
 ## 3. Direct network mode
 
@@ -47,9 +55,9 @@ TELEGRAM_PROXY_URL=
 Start the bot:
 
 ```bash
-docker compose build bot
-docker compose up -d bot
-docker compose logs -f bot
+make build-bot
+make up-direct
+make logs-bot
 ```
 
 ## 4. VLESS mode for a restricted VPS
@@ -59,7 +67,7 @@ The project can run a private sing-box sidecar. Only the bot's Telegram traffic 
 Generate `deploy/proxy/config.json` from a normal `vless://` share link:
 
 ```bash
-python3 scripts/configure_vless_proxy.py
+make proxy-config
 ```
 
 The command asks for the URI without echoing it to the terminal. The generated file is gitignored and is chmod `0600` where supported.
@@ -83,19 +91,19 @@ TELEGRAM_PROXY_URL=socks5://proxy:1080
 Validate sing-box configuration:
 
 ```bash
-docker compose --profile proxy run --rm proxy check -c /etc/sing-box/config.json
+make proxy-check
 ```
 
 Start proxy and bot:
 
 ```bash
-docker compose --profile proxy up -d proxy bot
+make up-proxy
 ```
 
 Watch logs:
 
 ```bash
-docker compose logs -f proxy bot
+make logs
 ```
 
 The proxy service does not publish port `1080` to the public host. It is reachable only inside the Compose network as `proxy:1080`.
@@ -116,41 +124,61 @@ The bot:
 
 Renderer warnings are included in the result message. Exceptions are written to container logs without exposing tracebacks to Telegram users.
 
-## 6. Operations
+## 6. Makefile operations
+
+Show all commands:
+
+```bash
+make
+```
 
 Status:
 
 ```bash
-docker compose ps
+make ps
 ```
 
 Bot logs:
 
 ```bash
-docker compose logs --tail=200 bot
+make logs-bot
 ```
 
 Proxy logs:
 
 ```bash
-docker compose logs --tail=200 proxy
+make logs-proxy
 ```
 
-Restart bot:
+Restart bot without reloading `.env`:
 
 ```bash
-docker compose restart bot
+make restart-bot
 ```
 
-Rebuild after code updates:
+Recreate bot and reload `.env` changes:
 
 ```bash
-docker compose build bot
-docker compose up -d bot
+make recreate-bot
 ```
 
-For VLESS mode:
+Rebuild image and recreate bot after code changes:
 
 ```bash
-docker compose --profile proxy up -d proxy bot
+make rebuild-bot
 ```
+
+Full renderer smoke test:
+
+```bash
+make smoke
+```
+
+Manual renderer usage:
+
+```bash
+make render-pdf INPUT_FILE=book.xlsx OUTPUT_NAME=book
+make render-eps INPUT_FILE=book.xlsx OUTPUT_NAME=book
+```
+
+The workbook for manual rendering must be under `data/input/`.
