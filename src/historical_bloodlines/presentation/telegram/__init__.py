@@ -1,19 +1,7 @@
-"""Telegram presentation layer for Historical Bloodlines."""
+"""Telegram presentation layer for Historical Bloodlines.
 
-from historical_bloodlines.presentation.telegram.config import (
-    TelegramBotConfigurationError,
-    TelegramBotSettings,
-    load_telegram_bot_settings,
-)
-from historical_bloodlines.presentation.telegram.generation import (
-    GenerationBundle,
-    TelegramGenerationService,
-)
-
-__all__ = [
-    "GenerationBundle",
-    "TelegramBotConfigurationError",
-    "TelegramBotSettings",
-    "TelegramGenerationService",
-    "load_telegram_bot_settings",
-]
+Keep this package initializer intentionally lightweight. Utility modules such as
+``vless`` are used directly on a bare VPS Python installation and must not pull
+in renderer dependencies (openpyxl, Graphviz, Cairo, etc.) merely because the
+package was imported.
+"""
