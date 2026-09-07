@@ -1,5 +1,10 @@
 from __future__ import annotations
 
+import os
+import subprocess
+import sys
+from pathlib import Path
+
 import pytest
 
 from historical_bloodlines.presentation.telegram.config import (
@@ -19,6 +24,32 @@ def test_parse_allowed_user_ids() -> None:
 def test_parse_allowed_user_ids_rejects_invalid_value() -> None:
     with pytest.raises(TelegramBotConfigurationError):
         _parse_allowed_user_ids("123,abc")
+
+
+def test_vless_module_imports_with_stdlib_only() -> None:
+    project_root = Path(__file__).resolve().parents[1]
+    environment = os.environ.copy()
+    environment["PYTHONPATH"] = str(project_root / "src")
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-S",
+            "-c",
+            (
+                "from historical_bloodlines.presentation.telegram.vless "
+                "import vless_uri_to_sing_box_config; "
+                "print(vless_uri_to_sing_box_config('vless://11111111-1111-1111-1111-111111111111@example.com:443?security=none')['outbounds'][0]['type'])"
+            ),
+        ],
+        cwd=project_root,
+        env=environment,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "vless"
 
 
 def test_vless_reality_uri_maps_to_sing_box() -> None:
