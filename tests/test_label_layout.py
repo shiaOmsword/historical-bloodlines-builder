@@ -1,8 +1,8 @@
+from historical_bloodlines.infrastructure.graph import GraphvizGenealogyRenderer
 from historical_bloodlines.infrastructure.graph.labels import (
     PersonLabelFormatter,
     normalize_display_text,
 )
-from historical_bloodlines.infrastructure.graph.renderer import GraphvizGenealogyRenderer
 from historical_bloodlines.domain import Person, ReignPeriod, SourcePersonKey
 
 
@@ -47,6 +47,12 @@ def test_trailing_life_note_stays_with_surname() -> None:
 
 def test_renderer_keeps_extra_vertical_air_between_generations() -> None:
     assert GraphvizGenealogyRenderer.LAYER_GAP == 30.0
+    assert GraphvizGenealogyRenderer.LINE_HEIGHT == 15.0
+
+
+def test_renderer_uses_compact_native_page_for_a5_readability() -> None:
+    assert GraphvizGenealogyRenderer.MIN_PAGE_WIDTH == 560.0
+    assert GraphvizGenealogyRenderer.MAX_HORIZONTAL_STRETCH == 1.12
 
 
 def test_titles_and_reign_dates_use_one_consistent_parenthetical_format() -> None:
@@ -158,7 +164,7 @@ def test_marriage_connector_is_drawn_as_compact_equals_sign() -> None:
     assert renderer._marriage_sign_xs(100.0, 108.0) == (100.0, 108.0)
 
 
-def test_child_drop_detours_around_unrelated_person_box() -> None:
+def test_child_drop_stays_straight_through_an_unrelated_label_lane() -> None:
     from uuid import uuid4
 
     from historical_bloodlines.infrastructure.graph.models import PersonPosition
@@ -187,12 +193,8 @@ def test_child_drop_detours_around_unrelated_person_box() -> None:
         person_positions=positions,
     )
 
-    assert connection_x == 52.0
-    assert segments == (
-        (52.0, 50.0, 52.0, 291.0),
-        (52.0, 291.0, 100.0, 291.0),
-        (100.0, 291.0, 100.0, 300.0),
-    )
+    assert connection_x == 100.0
+    assert segments == ((100.0, 50.0, 100.0, 300.0),)
 
 
 def test_child_drop_stays_straight_when_corridor_is_clear() -> None:
