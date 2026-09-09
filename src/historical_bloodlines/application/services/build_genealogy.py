@@ -9,6 +9,7 @@ from typing import Iterator
 from historical_bloodlines.application.dto import GenealogySheetDTO
 from historical_bloodlines.application.services.assembler import GenealogyAssembler
 from historical_bloodlines.application.services.parser import GenealogyRowParser
+from historical_bloodlines.config.render import RenderConfig, load_render_config
 from historical_bloodlines.domain import Genealogy
 from historical_bloodlines.infrastructure.excel import ExcelGenealogyReader
 from historical_bloodlines.infrastructure.graph import (
@@ -48,12 +49,18 @@ class BuildGenealogyUseCase:
         validator: NetworkXGenealogyValidator | None = None,
         renderer: GraphvizGenealogyRenderer | None = None,
         pdf_composer: PdfBookComposer | None = None,
+        *,
+        render_config: RenderConfig | None = None,
+        render_config_path: Path | None = None,
     ) -> None:
+        if render_config is not None and render_config_path is not None:
+            raise ValueError("Pass render_config or render_config_path, not both")
+        self.render_config = render_config or load_render_config(render_config_path)
         self._reader = reader or ExcelGenealogyReader()
         self._parser = parser or GenealogyRowParser()
         self._assembler = assembler or GenealogyAssembler()
         self._validator = validator or NetworkXGenealogyValidator()
-        self._renderer = renderer or GraphvizGenealogyRenderer()
+        self._renderer = renderer or GraphvizGenealogyRenderer(self.render_config)
         self._pdf_composer = pdf_composer or PdfBookComposer()
 
     def execute(
@@ -61,7 +68,7 @@ class BuildGenealogyUseCase:
         input_path: Path,
         output_path: Path,
         *,
-        page_format: PageFormat | str = DEFAULT_PAGE_FORMAT,
+        page_format: PageFormat | str | None = None,
     ) -> BuildResult:
         sheets = self._reader.read(input_path)
         if not sheets:
@@ -71,7 +78,9 @@ class BuildGenealogyUseCase:
         if output_format not in {".pdf", ".svg", ".png", ".eps"}:
             raise ValueError("Output format must be .pdf, .svg, .png or .eps")
 
-        selected_page_format = PageFormat(page_format)
+        selected_page_format = PageFormat(
+            page_format if page_format is not None else self.render_config.pdf.page_format
+        )
         if output_format == ".pdf":
             return self._build_multi_page_pdf(
                 sheets,

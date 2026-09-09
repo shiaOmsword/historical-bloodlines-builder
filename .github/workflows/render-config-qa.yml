@@ -1,0 +1,41 @@
+name: Render configuration QA
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  presets:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+      - name: Install render runtime
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes graphviz fonts-roboto
+          python -m pip install poetry==2.4.1
+          poetry check --lock
+          poetry install --no-interaction
+      - name: Test configuration and render all presets
+        run: |
+          poetry run pytest -q
+          poetry run python scripts/compare_render_configs.py examples/input.example.xlsx --output-dir render-qa --publisher
+      - name: Record source revision for artifact verification
+        if: always()
+        run: |
+          mkdir -p render-qa
+          git rev-parse HEAD > render-qa/source-commit.txt
+          git ls-tree -r HEAD > render-qa/source-tree.txt
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: render-config-qa
+          path: render-qa/
+          if-no-files-found: ignore
+          retention-days: 7

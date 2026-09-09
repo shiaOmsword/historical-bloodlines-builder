@@ -22,9 +22,12 @@ class TelegramGenerationService:
     """Generate Telegram-friendly artifacts from one uploaded workbook."""
 
     def __init__(self, builder: BuildGenealogyUseCase | None = None) -> None:
-        self._builder = builder or BuildGenealogyUseCase()
+        self._builder = builder
 
     def build(self, input_path: Path, output_directory: Path) -> GenerationBundle:
+        # Reload once per workbook, never between EPS/PNG and PDF. Editing the
+        # mounted YAML affects the next request without rebuilding the image.
+        builder = self._builder or BuildGenealogyUseCase()
         output_directory.mkdir(parents=True, exist_ok=True)
 
         with TemporaryDirectory(prefix="bloodlines_tg_", dir=output_directory) as raw_tmp:
@@ -32,8 +35,8 @@ class TelegramGenerationService:
             eps_target = temporary_directory / "publisher.eps"
             pdf_target = temporary_directory / "genealogy.pdf"
 
-            eps_result = self._builder.execute(input_path, eps_target)
-            pdf_result = self._builder.execute(input_path, pdf_target)
+            eps_result = builder.execute(input_path, eps_target)
+            pdf_result = builder.execute(input_path, pdf_target)
 
             publisher_directory = eps_result.output_path
             eps_files = sorted(publisher_directory.glob("*.eps"))
@@ -48,6 +51,10 @@ class TelegramGenerationService:
             staging_directory.mkdir(parents=True, exist_ok=True)
             for file_path in (*eps_files, *preview_files):
                 shutil.copy2(file_path, staging_directory / file_path.name)
+
+            (staging_directory / "render-settings.yaml").write_text(
+                builder.render_config.to_yaml(), encoding="utf-8"
+            )
 
             zip_base = output_directory / "genealogy_publisher"
             zip_path = Path(

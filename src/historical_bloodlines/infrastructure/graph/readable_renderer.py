@@ -7,6 +7,8 @@ from pathlib import Path
 
 from graphviz import Graph
 
+from historical_bloodlines.config.render import RenderConfig
+
 from historical_bloodlines.domain import Genealogy, Person
 from historical_bloodlines.infrastructure.graph.connector_routing import (
     OrthogonalConnectorRouter,
@@ -83,7 +85,24 @@ class GraphvizGenealogyRenderer(_BaseGraphvizGenealogyRenderer):
     # from their exact descendant axes and recreates tiny G-shaped doglegs.
     MAX_HORIZONTAL_STRETCH = 1.0
 
-    def __init__(self) -> None:
+    def __init__(self, config: RenderConfig | None = None) -> None:
+        self.config = config or RenderConfig()
+        typography = self.config.typography
+        layout = self.config.layout
+        # Instance attributes only: independent jobs never modify global style.
+        self.FONT_SIZE = typography.font_size_pt
+        self.LINE_HEIGHT = typography.resolved_line_height_pt
+        self.TITLE_FONT_SIZE = typography.title_font_size_pt
+        self.NOTE_FONT_SIZE = typography.note_font_size_pt
+        self.NOTE_LINE_HEIGHT = typography.note_line_height_pt
+        self.PERSON_GAP = layout.person_gap_pt
+        self.COMPONENT_GAP = layout.component_gap_pt
+        self.LAYER_GAP = layout.layer_gap_pt
+        self.PAGE_MARGIN_X = layout.page_margin_x_pt
+        self.PAGE_MARGIN_Y = layout.page_margin_y_pt
+        self.MIN_PAGE_WIDTH = layout.min_page_width_pt
+        self.MAX_TEXT_LINE = layout.max_text_line
+        self.MAX_NAME_LINE = layout.max_name_line
         self._labels = _ReadablePersonLabelFormatter(
             font_size=self.FONT_SIZE,
             line_height=self.LINE_HEIGHT,

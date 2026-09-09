@@ -1,0 +1,8 @@
+# +2 native pt for names/titles/dates, table headings and footnotes.
+# Unspecified fields inherit built-in defaults, NOT another YAML file.
+version: 1
+typography:
+  font_size_pt: 15.2
+  title_font_size_pt: 21
+  note_font_size_pt: 11
+  line_height_pt: null
