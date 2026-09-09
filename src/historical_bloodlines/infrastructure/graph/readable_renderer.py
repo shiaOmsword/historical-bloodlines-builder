@@ -1,19 +1,25 @@
 from __future__ import annotations
 
+from dataclasses import replace
 import html
 import math
-from uuid import UUID
+from pathlib import Path
 
-from historical_bloodlines.domain import Person
-from historical_bloodlines.infrastructure.graph.labels import PersonLabelFormatter
-from historical_bloodlines.infrastructure.graph.layout import (
-    FixedGenealogyLayout,
-    LayoutConfig,
+from graphviz import Graph
+
+from historical_bloodlines.domain import Genealogy, Person
+from historical_bloodlines.infrastructure.graph.connector_routing import (
+    OrthogonalConnectorRouter,
+    RoutingConflict,
+    Segment,
 )
-from historical_bloodlines.infrastructure.graph.models import (
-    FamilyView,
-    PartnerComponent,
-    PersonPosition,
+from historical_bloodlines.infrastructure.graph.labels import (
+    PersonLabelFormatter,
+    normalize_display_text,
+)
+from historical_bloodlines.infrastructure.graph.layout import LayoutConfig
+from historical_bloodlines.infrastructure.graph.orthogonal_layout import (
+    OrthogonalGenealogyLayout,
 )
 from historical_bloodlines.infrastructure.graph.renderer import (
     GraphvizGenealogyRenderer as _BaseGraphvizGenealogyRenderer,
@@ -21,29 +27,16 @@ from historical_bloodlines.infrastructure.graph.renderer import (
 
 
 class _ReadablePersonLabelFormatter(PersonLabelFormatter):
-    """Render labels with stable line boxes and a print-friendly name weight.
-
-    The regular renderer uses Graphviz ``BR`` elements and bold names. At the
-    small effective point size of an A5 page, that combination can close the
-    counters inside Cyrillic glyphs and Graphviz is free to choose its own line
-    leading. Here every line gets a predictable row height and names use a
-    medium face instead of full bold.
-
-    The white table background is intentional. Relationship lines are emitted
-    before nodes, so a long straight descendant line can pass *behind* an
-    unrelated label without drawing through its text. That lets the renderer
-    keep clean vertical trunks instead of the staircase-shaped detours that
-    looked like broken lines in the publisher proofs.
-    """
+    """Keep the approved typeface and leading without hiding connectors."""
 
     NAME_FONT_FAMILY = "Roboto Medium"
 
     def html_label(self, person: Person) -> str:
         box = self.measure(person)
-        row_height = max(1, int(math.ceil(self.line_height)))
-        name_font = html.escape(self.NAME_FONT_FAMILY, quote=True)
-
         rows: list[str] = []
+        name_font = html.escape(self.NAME_FONT_FAMILY, quote=True)
+        row_height = max(1, int(math.ceil(self.line_height)))
+
         for index, line in enumerate(box.lines):
             escaped = html.escape(line)
             if person.is_placeholder:
@@ -57,119 +50,40 @@ class _ReadablePersonLabelFormatter(PersonLabelFormatter):
 
         width = max(1, int(math.ceil(box.width)))
         height = max(1, int(math.ceil(box.height)))
+        # Deliberately no BGCOLOR. A label may not conceal an invalid line.
         return (
             '<<TABLE BORDER="0" CELLBORDER="0" CELLSPACING="0" '
-            'CELLPADDING="0" BGCOLOR="white" '
-            f'WIDTH="{width}" HEIGHT="{height}">'
-            f"{''.join(rows)}"
-            "</TABLE>>"
+            f'CELLPADDING="0" WIDTH="{width}" HEIGHT="{height}">'
+            f"{''.join(rows)}</TABLE>>"
         )
 
 
-class _ReadableFixedGenealogyLayout(FixedGenealogyLayout):
-    """Manual-layout variant that avoids very large empty gaps inside a row.
+class GraphvizGenealogyRenderer(_BaseGraphvizGenealogyRenderer):
+    """Readable genealogy renderer with validated orthogonal connectors.
 
-    Explicit ``Порядок в поколении`` values are relative ordering constraints,
-    not requests for arbitrary whitespace. During the iterative barycentric
-    pass the desired centres of two neighbouring branches can nevertheless drift
-    very far apart because each is pulled toward a different descendant chain.
-    Capping only the *empty* gap keeps those rows compact without changing the
-    requested left-to-right order or allowing boxes to overlap.
+    Horizontal positions are solved jointly across generations. Relationship
+    routes are then validated against labels and other family routes before any
+    Graphviz artifact is written. If the workbook's explicit generation/order
+    constraints make a clean route impossible, rendering fails closed instead
+    of publishing an ambiguous crossing.
     """
 
-    def __init__(
-        self,
-        config: LayoutConfig,
-        labels: PersonLabelFormatter,
-        *,
-        max_component_gap: float,
-    ) -> None:
-        super().__init__(config, labels)
-        self.MAX_COMPONENT_GAP = max(max_component_gap, self.COMPONENT_GAP)
-
-    def _pack_layer(
-        self,
-        ordered_ids: list[int],
-        desired: dict[int, float],
-        centers: dict[int, float],
-        components: dict[int, PartnerComponent],
-    ) -> None:
-        if not ordered_ids:
-            return
-
-        placed: dict[int, float] = {}
-        previous_right: float | None = None
-        for component_id in ordered_ids:
-            width = components[component_id].width
-            center = desired[component_id]
-            if previous_right is not None:
-                minimum_center = (
-                    previous_right + self.COMPONENT_GAP + width / 2
-                )
-                maximum_center = (
-                    previous_right + self.MAX_COMPONENT_GAP + width / 2
-                )
-                center = min(max(center, minimum_center), maximum_center)
-            placed[component_id] = center
-            previous_right = center + width / 2
-
-        next_left: float | None = None
-        for component_id in reversed(ordered_ids):
-            width = components[component_id].width
-            center = placed[component_id]
-            if next_left is not None:
-                maximum_center = next_left - self.COMPONENT_GAP - width / 2
-                minimum_center = next_left - self.MAX_COMPONENT_GAP - width / 2
-                center = max(min(center, maximum_center), minimum_center)
-            placed[component_id] = center
-            next_left = center - width / 2
-
-        # Preserve the same translation strategy as the base layout. Only the
-        # excessive internal whitespace is capped; the whole row is still moved
-        # toward the median of its relationship constraints.
-        shifts = [desired[item] - placed[item] for item in ordered_ids]
-        shifts.sort()
-        shift = shifts[len(shifts) // 2]
-        for component_id in ordered_ids:
-            centers[component_id] = placed[component_id] + shift
-
-
-class GraphvizGenealogyRenderer(_BaseGraphvizGenealogyRenderer):
-    """Publisher-oriented renderer tuned for compact, readable A5 tables."""
-
-    # Roboto has a clearer small-size Cyrillic shape than the generic Sans
-    # fallback while remaining neutral enough for book tables. Names are drawn
-    # with Roboto Medium by _ReadablePersonLabelFormatter instead of full bold.
     FONT_FAMILY = "Roboto"
     FONT_SIZE = 13.2
     LINE_HEIGHT = 15.0
     TEXT_PADDING_Y = 2.0
 
-    # The previous 760 pt minimum canvas was close to A4 landscape even though
-    # the normal book output is A5 landscape (~595 pt wide). PdfBookComposer
-    # therefore shrank even small genealogies before placing them on the page.
-    # A smaller native canvas lets compact tables use the available A5 area and
-    # materially increases their final effective text size.
     MIN_PAGE_WIDTH = 560.0
     PAGE_MARGIN_X = 18.0
-
-    # Keep branches compact. In particular, do not stretch a short side branch
-    # just to fill the landscape canvas; that was the source of several long
-    # "shoulders" in the late Capetian table.
     PERSON_GAP = 34.0
     COMPONENT_GAP = 22.0
-    MAX_COMPONENT_GAP = 46.0
-    MAX_HORIZONTAL_STRETCH = 1.12
 
-    # A one-child line does not need a visible dogleg merely because the child
-    # label centre differs from the family source by a few points. If the source
-    # still lands comfortably inside the label box, enter the top of that box at
-    # the source X and keep the whole trunk vertical.
-    SINGLE_CHILD_STRAIGHT_ENTRY_MAX = 12.0
-    SINGLE_CHILD_ENTRY_MARGIN = 2.0
+    # Never stretch solved person centres after the constraint pass. Stretching
+    # coordinates while keeping label widths fixed shifts marriage centres away
+    # from their exact descendant axes and recreates tiny G-shaped doglegs.
+    MAX_HORIZONTAL_STRETCH = 1.0
 
     def __init__(self) -> None:
-        super().__init__()
         self._labels = _ReadablePersonLabelFormatter(
             font_size=self.FONT_SIZE,
             line_height=self.LINE_HEIGHT,
@@ -178,7 +92,7 @@ class GraphvizGenealogyRenderer(_BaseGraphvizGenealogyRenderer):
             max_text_line=self.MAX_TEXT_LINE,
             max_name_line=self.MAX_NAME_LINE,
         )
-        self._layout = _ReadableFixedGenealogyLayout(
+        self._layout = OrthogonalGenealogyLayout(
             LayoutConfig(
                 person_gap=self.PERSON_GAP,
                 component_gap=self.COMPONENT_GAP,
@@ -192,94 +106,373 @@ class GraphvizGenealogyRenderer(_BaseGraphvizGenealogyRenderer):
                 max_horizontal_stretch=self.MAX_HORIZONTAL_STRETCH,
             ),
             self._labels,
-            max_component_gap=self.MAX_COMPONENT_GAP,
         )
-        self._single_child_source_x_by_child: dict[UUID, float] = {}
+        self.last_geometry: dict[str, object] | None = None
 
-    def _family_bus_ys(
+    def render(
         self,
-        families: tuple[FamilyView, ...],
-        person_positions: dict[UUID, PersonPosition],
-        marriage_connectors: dict[
-            frozenset[UUID],
-            tuple[float, float, float],
-        ],
-    ) -> dict[FamilyView, float]:
-        result = super()._family_bus_ys(
-            families,
-            person_positions,
-            marriage_connectors,
-        )
-
-        # Remember the exact X used by the source stem. _route_child_drop() is
-        # called a little later and otherwise only knows the child centre. This
-        # is the missing context that previously produced tiny horizontal bridge
-        # segments in one-child families.
-        source_x_by_child: dict[UUID, float] = {}
-        for family in families:
-            if len(family.child_ids) != 1:
-                continue
-
-            child_id = family.child_ids[0]
-            if len(family.parent_ids) == 2:
-                pair = frozenset(family.parent_ids)
-                connector = marriage_connectors.get(pair)
-                if connector is None:
-                    source_x, _ = self._pair_fallback_midpoint(
-                        family.parent_ids,
-                        person_positions,
-                    )
-                else:
-                    left_x, right_x, _ = connector
-                    source_x = self._marriage_stem_x(left_x, right_x)
-            else:
-                source_x = person_positions[family.parent_ids[0]].center_x
-
-            source_x_by_child[child_id] = source_x
-
-        self._single_child_source_x_by_child = source_x_by_child
-        return result
-
-    def _route_child_drop(
-        self,
+        genealogy: Genealogy,
+        output_path: Path,
         *,
-        child_id: UUID,
-        bus_y: float,
-        person_positions: dict[UUID, PersonPosition],
-    ) -> tuple[float, tuple[tuple[float, float, float, float], ...]]:
-        """Prefer a single straight trunk for a visually near-aligned child.
+        title: str,
+    ) -> Path:
+        output_path = Path(output_path)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_format = output_path.suffix.lstrip(".").casefold()
+        if output_format not in {"pdf", "svg", "png", "eps"}:
+            raise ValueError("Output format must be pdf, svg, png or eps")
 
-        The previous readability patch removed collision-avoidance staircases,
-        but the base renderer still inserted a short horizontal bus whenever a
-        one-child source X and the child's centre X differed at all. That is the
-        small 1-10 px "break" visible under several marriage signs and single
-        parents in the review PDF.
-        """
+        components, component_by_person = self._layout._build_partner_components(
+            genealogy
+        )
+        families = self._layout._build_families(
+            genealogy,
+            component_by_person,
+            components,
+        )
+        component_graph = self._layout._build_component_graph(
+            components,
+            families,
+            component_by_person,
+        )
+        component_centers, levels = self._layout._place_components(
+            genealogy,
+            components,
+            component_graph,
+            component_by_person,
+            families,
+        )
+        person_positions, page_width, page_height = self._layout._place_people(
+            components,
+            component_centers,
+            levels,
+        )
 
-        child_position = person_positions[child_id]
-        child_x = child_position.center_x
-        child_top = child_position.top_y
-        source_x = self._single_child_source_x_by_child.get(child_id)
-
-        if source_x is not None:
-            inside_box = (
-                child_position.left + self.SINGLE_CHILD_ENTRY_MARGIN
-                <= source_x
-                <= child_position.right - self.SINGLE_CHILD_ENTRY_MARGIN
+        marriage_connectors: dict[
+            frozenset,
+            tuple[float, float, float],
+        ] = {}
+        marriage_segments: list[Segment] = []
+        partnership_pairs = sorted(
+            self._layout._partnership_pairs(genealogy),
+            key=lambda pair: tuple(sorted(str(person_id) for person_id in pair)),
+        )
+        for pair in partnership_pairs:
+            person_a_id, person_b_id = sorted(
+                pair,
+                key=lambda person_id: person_positions[person_id].center_x,
             )
-            if (
-                inside_box
-                and abs(source_x - child_x)
-                <= self.SINGLE_CHILD_STRAIGHT_ENTRY_MAX
-            ):
-                return source_x, (
-                    (source_x, bus_y, source_x, child_top),
+            pos_a = person_positions[person_a_id]
+            pos_b = person_positions[person_b_id]
+
+            gap_center_x = (pos_a.right + pos_b.left) / 2
+            name_y_a = pos_a.top_y + self.TEXT_PADDING_Y + self.LINE_HEIGHT / 2
+            name_y_b = pos_b.top_y + self.TEXT_PADDING_Y + self.LINE_HEIGHT / 2
+            center_y = (name_y_a + name_y_b) / 2
+            upper_y = center_y - self.MARRIAGE_LINE_GAP / 2
+            lower_y = center_y + self.MARRIAGE_LINE_GAP / 2
+
+            available_width = max(0.0, pos_b.left - pos_a.right - 10.0)
+            sign_width = min(self.MARRIAGE_SIGN_WIDTH, available_width)
+            left_x = gap_center_x - sign_width / 2
+            right_x = gap_center_x + sign_width / 2
+
+            marriage_connectors[pair] = (left_x, right_x, lower_y)
+            if sign_width > 0.05:
+                marriage_segments.extend(
+                    (
+                        Segment(left_x, upper_y, right_x, upper_y),
+                        Segment(left_x, lower_y, right_x, lower_y),
+                    )
                 )
 
-        # For a genuinely displaced child keep the intentional orthogonal
-        # connection. Labels remain opaque, so this straight drop can also pass
-        # behind unrelated text without producing obstacle-avoidance staircases.
-        return child_x, ((child_x, bus_y, child_x, child_top),)
+        router = OrthogonalConnectorRouter(
+            person_positions,
+            families,
+            marriage_connectors,
+        )
+        try:
+            routes = router.plan()
+        except RoutingConflict as exc:
+            parents = " / ".join(
+                genealogy.persons[person_id].name
+                for person_id in exc.family.parent_ids
+            )
+            children = ", ".join(
+                genealogy.persons[person_id].name
+                for person_id in exc.family.child_ids
+            )
+            raise ValueError(
+                f"{title}: {parents} -> {children}: {exc}. "
+                "Review manual generation/order; no misleading crossing was rendered."
+            ) from exc
+
+        line_segments = [
+            *marriage_segments,
+            *(segment for route in routes for segment in route.segments),
+        ]
+        min_x = min(
+            [position.left for position in person_positions.values()]
+            + [min(segment.x1, segment.x2) for segment in line_segments]
+        )
+        max_x = max(
+            [position.right for position in person_positions.values()]
+            + [max(segment.x1, segment.x2) for segment in line_segments]
+        )
+        page_width = max(
+            page_width,
+            max_x - min_x + self.PAGE_MARGIN_X * 2,
+        )
+        shift_x = (page_width - (max_x - min_x)) / 2 - min_x
+
+        footnote_lines = self._footnote_lines(genealogy, page_width)
+        footnote_center_y: float | None = None
+        if footnote_lines:
+            footnote_height = max(
+                self.NOTE_LINE_HEIGHT,
+                len(footnote_lines) * self.NOTE_LINE_HEIGHT,
+            )
+            footnote_top = page_height - self.PAGE_MARGIN_Y + self.NOTE_TOP_GAP
+            footnote_center_y = footnote_top + footnote_height / 2
+            page_height = footnote_top + footnote_height + self.NOTE_BOTTOM_GAP
+            extra_width = max(
+                0.0,
+                page_height * self.MIN_LANDSCAPE_RATIO - page_width,
+            )
+            page_width += extra_width
+            shift_x += extra_width / 2
+
+        person_positions = {
+            person_id: replace(
+                position,
+                center_x=position.center_x + shift_x,
+            )
+            for person_id, position in person_positions.items()
+        }
+        line_segments = [
+            Segment(
+                segment.x1 + shift_x,
+                segment.y1,
+                segment.x2 + shift_x,
+                segment.y2,
+            )
+            for segment in line_segments
+        ]
+
+        # A translation changes neither crossings nor box hits; expose the
+        # unambiguous pre-translation route diagnostics for regression tests.
+        route_issues = tuple(router.issues(routes))
+        self.last_geometry = {
+            "positions": person_positions,
+            "routes": routes,
+            "families": families,
+            "width": page_width,
+            "height": page_height,
+            "segments": tuple(line_segments),
+            "router_searches": router.search_count,
+            "accepted_alignments": len(self._layout.accepted_alignments),
+            "deferred_alignments": len(self._layout.deferred_alignments),
+            "reserved_corridors": len(self._layout.reserved_corridors),
+            "issues": route_issues,
+        }
+        if route_issues:
+            raise ValueError(f"Unsafe connector geometry: {route_issues[0]!r}")
+
+        graph_output_format = "svg" if output_format == "eps" else output_format
+        graph_output_renderer = "cairo" if output_format == "eps" else None
+        graph = Graph(
+            name="genealogy",
+            format=graph_output_format,
+            engine="neato",
+            renderer=graph_output_renderer,
+        )
+        graph.attr(
+            layout="neato",
+            overlap="true",
+            splines="false",
+            outputorder="edgesfirst",
+            bgcolor="white",
+            pad="0.12",
+            margin="0",
+            notranslate="true",
+        )
+        graph.attr(
+            "node",
+            shape="plain",
+            fontname=self.FONT_FAMILY,
+            fontsize=str(self.FONT_SIZE),
+            margin="0",
+            pin="true",
+        )
+        graph.attr(
+            "edge",
+            color="#222222",
+            penwidth=str(self.LINE_WIDTH),
+            dir="none",
+            tailclip="false",
+            headclip="false",
+        )
+
+        anchors: dict[tuple[float, float], str] = {}
+
+        def graph_y(canvas_y: float) -> float:
+            return page_height - canvas_y
+
+        def anchor(x: float, y: float) -> str:
+            key = round(x, 6), round(y, 6)
+            existing = anchors.get(key)
+            if existing is not None:
+                return existing
+            node_id = f"anchor_{len(anchors) + 1}"
+            anchors[key] = node_id
+            graph.node(
+                node_id,
+                label="",
+                shape="point",
+                width="0.001",
+                height="0.001",
+                fixedsize="true",
+                style="invis",
+                pos=f"{key[0]:.6f},{graph_y(key[1]):.6f}!",
+            )
+            return node_id
+
+        graph.node(
+            "page_bottom_left",
+            label="",
+            shape="point",
+            width="0.001",
+            height="0.001",
+            fixedsize="true",
+            style="invis",
+            pos="0,0!",
+        )
+        graph.node(
+            "page_top_right",
+            label="",
+            shape="point",
+            width="0.001",
+            height="0.001",
+            fixedsize="true",
+            style="invis",
+            pos=f"{page_width:.6f},{page_height:.6f}!",
+        )
+
+        # Split only at genuine endpoints/T-junctions. Do not independently
+        # round parent and child centres; doing so was another source of tiny
+        # visible offsets in earlier builds.
+        for segment in self._split_junctions(tuple(line_segments)):
+            graph.edge(
+                anchor(segment.x1, segment.y1),
+                anchor(segment.x2, segment.y2),
+            )
+
+        graph.node(
+            "title",
+            label=f"<<B>{html.escape(normalize_display_text(title))}</B>>",
+            pos=(
+                f"{page_width / 2:.6f},"
+                f"{graph_y(self.PAGE_MARGIN_Y + 8):.6f}!"
+            ),
+            fontsize=str(self.TITLE_FONT_SIZE),
+            fontname=self.FONT_FAMILY,
+        )
+
+        for person in genealogy.persons.values():
+            position = person_positions[person.id]
+            graph.node(
+                self._person_node_id(person.id),
+                label=self._labels.html_label(person),
+                pos=(
+                    f"{position.center_x:.6f},"
+                    f"{graph_y(position.top_y + position.height / 2):.6f}!"
+                ),
+            )
+
+        if footnote_center_y is not None:
+            footnote_rows = "".join(
+                (
+                    '<TR><TD ALIGN="LEFT">'
+                    f'<FONT POINT-SIZE="{self.NOTE_FONT_SIZE:g}">'
+                    f"{html.escape(line)}</FONT></TD></TR>"
+                )
+                for line in footnote_lines
+            )
+            graph.node(
+                "footnotes",
+                label=(
+                    '<<TABLE BORDER="0" CELLBORDER="0" CELLSPACING="0" '
+                    f'CELLPADDING="0">{footnote_rows}</TABLE>>'
+                ),
+                pos=(
+                    f"{page_width / 2:.6f},"
+                    f"{graph_y(footnote_center_y):.6f}!"
+                ),
+                shape="plain",
+                fontname=self.FONT_FAMILY,
+                fontsize=str(self.NOTE_FONT_SIZE),
+                margin="0",
+            )
+
+        if output_format == "eps":
+            return self._render_publisher_safe_eps(graph, output_path)
+
+        rendered = self._render_graph_artifact(
+            graph,
+            output_directory=output_path.parent,
+        )
+        rendered.replace(output_path)
+        return output_path
+
+    @staticmethod
+    def _split_junctions(
+        lines: tuple[Segment, ...],
+    ) -> tuple[Segment, ...]:
+        endpoints = {
+            point
+            for segment in lines
+            for point in (segment.start, segment.end)
+        }
+        result: list[Segment] = []
+        for segment in lines:
+            left, top, right, bottom = segment.bounds
+            if segment.vertical:
+                values = sorted(
+                    {
+                        segment.y1,
+                        segment.y2,
+                        *(
+                            y
+                            for x, y in endpoints
+                            if abs(x - segment.x1) < 1e-5
+                            and top < y < bottom
+                        ),
+                    }
+                )
+                result.extend(
+                    Segment(segment.x1, start, segment.x1, end)
+                    for start, end in zip(values, values[1:])
+                    if end - start > 1e-5
+                )
+            else:
+                values = sorted(
+                    {
+                        segment.x1,
+                        segment.x2,
+                        *(
+                            x
+                            for x, y in endpoints
+                            if abs(y - segment.y1) < 1e-5
+                            and left < x < right
+                        ),
+                    }
+                )
+                result.extend(
+                    Segment(start, segment.y1, end, segment.y1)
+                    for start, end in zip(values, values[1:])
+                    if end - start > 1e-5
+                )
+        return tuple(result)
 
 
 __all__ = ["GraphvizGenealogyRenderer"]
