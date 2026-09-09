@@ -1,0 +1,7 @@
+# +3 native pt. Automatic leading keeps label measurement and drawing in sync.
+version: 1
+typography:
+  font_size_pt: 16.2
+  title_font_size_pt: 22
+  note_font_size_pt: 12
+  line_height_pt: null

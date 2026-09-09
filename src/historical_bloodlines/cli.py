@@ -30,12 +30,17 @@ def build(
         "-o",
         help="Output .pdf, .svg, .png or .eps path.",
     ),
-    page_format: PageFormat = typer.Option(
-        PageFormat.A5,
+    page_format: PageFormat | None = typer.Option(
+        None,
         "--page-format",
         "--paper",
-        help="Landscape PDF paper size: a5 (default) or a4.",
+        help="Override YAML PDF paper size: a5 or a4 (default without config: a5).",
         case_sensitive=False,
+    ),
+    render_config: Path | None = typer.Option(
+        None,
+        "--render-config",
+        help="Render YAML path. Overrides BLOODLINES_RENDER_CONFIG and auto-discovery.",
     ),
 ) -> None:
     prepare_bundled_graphviz()
@@ -44,7 +49,14 @@ def build(
     target = output_path or settings.output_file
 
     try:
-        result = BuildGenealogyUseCase().execute(
+        builder = BuildGenealogyUseCase(render_config_path=render_config)
+        style = builder.render_config
+        console.print(
+            f"Render config: {style.source_path or 'built-in defaults'}; "
+            f"text {style.typography.font_size_pt:g} pt; "
+            f"leading {style.typography.resolved_line_height_pt:g} pt"
+        )
+        result = builder.execute(
             source,
             target,
             page_format=page_format,

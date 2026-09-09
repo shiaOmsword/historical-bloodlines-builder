@@ -226,7 +226,7 @@ def test_render_is_landscape_without_visible_marriage_points(tmp_path: Path) -> 
     assert "<circle" not in svg_text
     # All visible relationship lines use one stroke width.
     assert 'stroke-width="0.' not in svg_text
-    assert 'font-family="Sans"' in svg_text
+    assert 'font-family="Roboto"' in svg_text
 
 
 def test_children_are_not_automatically_assigned_to_unconfirmed_spouse(tmp_path: Path) -> None:

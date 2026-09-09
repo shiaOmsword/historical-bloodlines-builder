@@ -43,3 +43,7 @@ deploy/proxy/config.json
 # Locally copied Graphviz runtime
 /vendor/graphviz/*
 !/vendor/graphviz/README.md
+
+# Local render configuration (versioned presets live in config/)
+/render.yaml
+/data/render.yaml

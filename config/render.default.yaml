@@ -1,0 +1,19 @@
+# Native canvas points, before uniform PDF fit-to-page scaling.
+# Font families remain Roboto / Roboto Medium. Geometry validation stays on.
+version: 1
+typography:
+  font_size_pt: 13.2
+  line_height_pt: null # automatic: proportional to font size, rounded up
+  title_font_size_pt: 19
+  note_font_size_pt: 9
+layout:
+  person_gap_pt: 34
+  component_gap_pt: 22
+  layer_gap_pt: 30
+  page_margin_x_pt: 18
+  page_margin_y_pt: 16
+  min_page_width_pt: 560
+  max_text_line: 20
+  max_name_line: 16
+pdf:
+  page_format: a5
