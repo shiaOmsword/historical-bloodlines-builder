@@ -1,4 +1,4 @@
-from historical_bloodlines.infrastructure.graph.renderer import (
+from historical_bloodlines.infrastructure.graph.readable_renderer import (
     GraphvizGenealogyRenderer,
 )
 from historical_bloodlines.infrastructure.graph.validator import (
