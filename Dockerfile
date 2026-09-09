@@ -15,6 +15,7 @@ RUN apt-get update \
     && apt-get install --yes --no-install-recommends \
         fontconfig \
         fonts-dejavu-core \
+        fonts-roboto \
         graphviz \
         libcairo2 \
         libpango-1.0-0 \
@@ -39,7 +40,8 @@ RUN mkdir -p /data/input /data/output /data/telegram \
     && fc-cache -f \
     && dot -V \
     && neato -V \
-    && fc-match Sans \
+    && fc-match Roboto \
+    && fc-match "Roboto Medium" \
     && python -c "import cairosvg; print('CairoSVG', cairosvg.__version__)" \
     && python -c "import aiogram; print('aiogram', aiogram.__version__)"
 
