@@ -8,16 +8,21 @@ permissions:
 jobs:
   snapshot:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
-          ref: c0dd7f242bc8b195fb88e7a870395a2ebde861f3
           persist-credentials: false
-      - name: Archive the reviewed baseline (no environment or credentials)
-        run: git archive --format=zip HEAD -o baseline-source.zip
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+      - name: Resolve dependency lock
+        run: |
+          python -m pip install poetry==2.4.1
+          poetry lock
+          poetry check --lock
       - uses: actions/upload-artifact@v4
         with:
-          name: render-config-baseline-source
-          path: baseline-source.zip
+          name: render-config-poetry-lock
+          path: poetry.lock
           retention-days: 1
