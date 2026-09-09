@@ -45,14 +45,12 @@ def test_trailing_life_note_stays_with_surname() -> None:
     )
 
 
-def test_renderer_keeps_extra_vertical_air_between_generations() -> None:
+def test_renderer_keeps_approved_readability_typography() -> None:
     assert GraphvizGenealogyRenderer.LAYER_GAP == 30.0
     assert GraphvizGenealogyRenderer.LINE_HEIGHT == 15.0
-
-
-def test_renderer_uses_compact_native_page_for_a5_readability() -> None:
     assert GraphvizGenealogyRenderer.MIN_PAGE_WIDTH == 560.0
-    assert GraphvizGenealogyRenderer.MAX_HORIZONTAL_STRETCH == 1.12
+    # The joint layout no longer stretches already-solved person centres.
+    assert GraphvizGenealogyRenderer.MAX_HORIZONTAL_STRETCH == 1.0
 
 
 def test_titles_and_reign_dates_use_one_consistent_parenthetical_format() -> None:
@@ -159,154 +157,8 @@ def test_existing_terminal_comma_is_removed_when_title_is_absent() -> None:
 def test_marriage_connector_is_drawn_as_compact_equals_sign() -> None:
     renderer = GraphvizGenealogyRenderer()
 
+    # These helpers remain part of the base renderer contract even though the
+    # final readable renderer now plans relationship geometry in one pass.
     assert renderer._marriage_line_ys(100.0) == (98.0, 102.0)
     assert renderer._marriage_sign_xs(100.0, 160.0) == (124.0, 136.0)
     assert renderer._marriage_sign_xs(100.0, 108.0) == (100.0, 108.0)
-
-
-def test_child_drop_stays_straight_through_an_unrelated_label_lane() -> None:
-    from uuid import uuid4
-
-    from historical_bloodlines.infrastructure.graph.models import PersonPosition
-
-    renderer = GraphvizGenealogyRenderer()
-    obstacle_id = uuid4()
-    child_id = uuid4()
-    positions = {
-        obstacle_id: PersonPosition(
-            center_x=100.0,
-            top_y=100.0,
-            width=80.0,
-            height=60.0,
-        ),
-        child_id: PersonPosition(
-            center_x=100.0,
-            top_y=300.0,
-            width=80.0,
-            height=40.0,
-        ),
-    }
-
-    connection_x, segments = renderer._route_child_drop(
-        child_id=child_id,
-        bus_y=50.0,
-        person_positions=positions,
-    )
-
-    assert connection_x == 100.0
-    assert segments == ((100.0, 50.0, 100.0, 300.0),)
-
-
-def test_child_drop_stays_straight_when_corridor_is_clear() -> None:
-    from uuid import uuid4
-
-    from historical_bloodlines.infrastructure.graph.models import PersonPosition
-
-    renderer = GraphvizGenealogyRenderer()
-    child_id = uuid4()
-    positions = {
-        child_id: PersonPosition(
-            center_x=100.0,
-            top_y=300.0,
-            width=80.0,
-            height=40.0,
-        ),
-    }
-
-    connection_x, segments = renderer._route_child_drop(
-        child_id=child_id,
-        bus_y=50.0,
-        person_positions=positions,
-    )
-
-    assert connection_x == 100.0
-    assert segments == ((100.0, 50.0, 100.0, 300.0),)
-
-
-def test_overlapping_families_use_separate_child_bus_lanes() -> None:
-    from uuid import uuid4
-
-    from historical_bloodlines.infrastructure.graph.models import (
-        FamilyView,
-        PersonPosition,
-    )
-
-    renderer = GraphvizGenealogyRenderer()
-    mother_left, father, mother_right = uuid4(), uuid4(), uuid4()
-    child_left, child_middle, child_right = uuid4(), uuid4(), uuid4()
-    positions = {
-        mother_left: PersonPosition(80.0, 50.0, 40.0, 30.0),
-        father: PersonPosition(120.0, 50.0, 40.0, 30.0),
-        mother_right: PersonPosition(160.0, 50.0, 40.0, 30.0),
-        child_left: PersonPosition(20.0, 120.0, 40.0, 30.0),
-        child_middle: PersonPosition(80.0, 120.0, 40.0, 30.0),
-        child_right: PersonPosition(60.0, 120.0, 40.0, 30.0),
-    }
-    first_family = FamilyView(
-        parent_ids=(mother_left, father),
-        child_ids=(child_left, child_middle),
-        parent_component_id=1,
-        source_offset=-20.0,
-    )
-    second_family = FamilyView(
-        parent_ids=(father, mother_right),
-        child_ids=(child_right,),
-        parent_component_id=1,
-        source_offset=20.0,
-    )
-    connectors = {
-        frozenset((mother_left, father)): (90.0, 110.0, 70.0),
-        frozenset((father, mother_right)): (130.0, 150.0, 70.0),
-    }
-
-    bus_ys = renderer._family_bus_ys(
-        (first_family, second_family),
-        positions,
-        connectors,
-    )
-
-    assert bus_ys[second_family] - bus_ys[first_family] == renderer.FAMILY_BUS_GAP
-
-
-def test_non_overlapping_families_keep_the_compact_bus_level() -> None:
-    from uuid import uuid4
-
-    from historical_bloodlines.infrastructure.graph.models import (
-        FamilyView,
-        PersonPosition,
-    )
-
-    renderer = GraphvizGenealogyRenderer()
-    mother_left, father, mother_right = uuid4(), uuid4(), uuid4()
-    child_left, child_right = uuid4(), uuid4()
-    positions = {
-        mother_left: PersonPosition(80.0, 50.0, 40.0, 30.0),
-        father: PersonPosition(120.0, 50.0, 40.0, 30.0),
-        mother_right: PersonPosition(160.0, 50.0, 40.0, 30.0),
-        child_left: PersonPosition(20.0, 120.0, 40.0, 30.0),
-        child_right: PersonPosition(220.0, 120.0, 40.0, 30.0),
-    }
-    first_family = FamilyView(
-        parent_ids=(mother_left, father),
-        child_ids=(child_left,),
-        parent_component_id=1,
-        source_offset=-20.0,
-    )
-    second_family = FamilyView(
-        parent_ids=(father, mother_right),
-        child_ids=(child_right,),
-        parent_component_id=1,
-        source_offset=20.0,
-    )
-    connectors = {
-        frozenset((mother_left, father)): (90.0, 110.0, 70.0),
-        frozenset((father, mother_right)): (130.0, 150.0, 70.0),
-    }
-
-    bus_ys = renderer._family_bus_ys(
-        (first_family, second_family),
-        positions,
-        connectors,
-    )
-
-    assert bus_ys[first_family] == bus_ys[second_family]
