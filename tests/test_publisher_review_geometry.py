@@ -31,7 +31,9 @@ def test_asymmetric_spouse_labels_keep_marriage_sign_visually_centered() -> None
 
     sign_left, sign_right = renderer._readable_marriage_sign_xs(left, right)
 
-    assert (sign_left + sign_right) / 2 == pytest.approx(180.0)
+    # 180 is the preferred anchor midpoint; 181 is the nearest centre that
+    # keeps the full 12 pt sign outside the wider label's 5 pt clearance.
+    assert (sign_left + sign_right) / 2 == pytest.approx(181.0)
     assert sign_left >= left.right + 5.0 - 1e-6
     assert sign_right <= right.left - 5.0 + 1e-6
 
@@ -64,3 +66,30 @@ def test_single_parent_stays_on_axis_of_child_inside_marriage_component() -> Non
         positions[child.id].center_x,
         abs=1e-6,
     )
+
+
+def test_two_parent_descendant_uses_same_axis_as_readable_marriage_sign(
+    tmp_path,
+) -> None:
+    genealogy = Genealogy()
+    first = _person(
+        genealogy,
+        1,
+        "Parent with a substantially wider label",
+        1,
+    )
+    second = _person(genealogy, 2, "B", 1)
+    child = _person(genealogy, 3, "Only child", 2)
+    genealogy.marriages.add(MarriageRelation.create(first.id, second.id))
+    genealogy.family_child_relations.add(
+        FamilyChildRelation(frozenset((first.id, second.id)), child.id)
+    )
+
+    renderer = GraphvizGenealogyRenderer()
+    renderer.render(genealogy, tmp_path / "marriage-axis.svg", title="Marriage axis")
+
+    assert renderer.last_geometry is not None
+    route = renderer.last_geometry["routes"][0]
+    assert route.source[0] == pytest.approx(route.targets[0][0], abs=1e-6)
+    assert len(route.segments) == 1
+    assert renderer.last_geometry["issues"] == ()
