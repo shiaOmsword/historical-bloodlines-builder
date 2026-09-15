@@ -314,9 +314,15 @@ class OrthogonalConnectorRouter:
             source = self.source(family)
             targets = self.targets(family)
             straight = len(targets) == 1 and abs(source[0] - targets[0][0]) < EPS
+            # Route the drawing from older generations downward. Within one
+            # parent row, establish branching family buses before exact
+            # single-child columns. A straight feeder can detour around an
+            # already-owned bus, while a bus spanning several children may be
+            # topologically unable to cross a straight feeder that was claimed
+            # first (the Luxembourg multi-spouse case is the canonical example).
             return (
-                not straight,
                 source[1],
+                straight,
                 source[0],
                 tuple(str(person_id) for person_id in family.parent_ids),
             )
