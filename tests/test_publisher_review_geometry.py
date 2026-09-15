@@ -14,11 +14,17 @@ from historical_bloodlines.infrastructure.graph import GraphvizGenealogyRenderer
 from historical_bloodlines.infrastructure.graph.models import PersonPosition
 
 
-def _person(genealogy: Genealogy, row: int, name: str, generation: int) -> Person:
+def _person(
+    genealogy: Genealogy,
+    row: int,
+    name: str,
+    generation: int,
+    order: int | None = None,
+) -> Person:
     person = Person.create(
         source_key=SourcePersonKey("Publisher regression", row),
         name=name,
-        layout_hint=PersonLayoutHint(generation, None),
+        layout_hint=PersonLayoutHint(generation, order),
     )
     genealogy.add_person(person)
     return person
@@ -92,4 +98,38 @@ def test_two_parent_descendant_uses_same_axis_as_readable_marriage_sign(
     route = renderer.last_geometry["routes"][0]
     assert route.source[0] == pytest.approx(route.targets[0][0], abs=1e-6)
     assert len(route.segments) == 1
+    assert renderer.last_geometry["issues"] == ()
+
+
+def test_luxembourg_sibling_order_does_not_reorder_sigismunds_spouses(
+    tmp_path,
+) -> None:
+    """Wenceslaus before Sigismund is a sibling hint, not spouse ordering."""
+
+    genealogy = Genealogy()
+    charles = _person(genealogy, 1, "Charles IV", 4)
+    louis = _person(genealogy, 2, "Louis I of Anjou", 4)
+    wenceslaus = _person(genealogy, 3, "Wenceslaus IV", 5, 10)
+    sigismund = _person(genealogy, 4, "Sigismund", 5, 20)
+    maria = _person(genealogy, 5, "Maria of Anjou", 5)
+    barbara = _person(genealogy, 6, "Barbara of Cilli", 5)
+
+    genealogy.marriages.add(MarriageRelation.create(sigismund.id, maria.id))
+    genealogy.marriages.add(MarriageRelation.create(sigismund.id, barbara.id))
+    genealogy.family_child_relations.add(
+        FamilyChildRelation(frozenset((charles.id,)), wenceslaus.id)
+    )
+    genealogy.family_child_relations.add(
+        FamilyChildRelation(frozenset((charles.id,)), sigismund.id)
+    )
+    genealogy.family_child_relations.add(
+        FamilyChildRelation(frozenset((louis.id,)), maria.id)
+    )
+
+    renderer = GraphvizGenealogyRenderer()
+    renderer.render(genealogy, tmp_path / "luxembourg.svg", title="Luxembourg")
+
+    assert renderer.last_geometry is not None
+    positions = renderer.last_geometry["positions"]
+    assert positions[wenceslaus.id].center_x < positions[sigismund.id].center_x
     assert renderer.last_geometry["issues"] == ()
