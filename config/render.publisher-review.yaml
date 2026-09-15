@@ -1,6 +1,6 @@
 # Publisher review profile based on +2 typography.
-# Keeps the accepted body/title sizes, makes the long Lancaster/York footnote
-# readable, and brings spouses slightly closer together for the current review round.
+# Keeps the accepted body/title sizes and makes the long Lancaster/York
+# footnote readable without changing the stable +2 preset.
 version: 1
 
 typography:
@@ -8,9 +8,6 @@ typography:
   line_height_pt: null
   title_font_size_pt: 21
   note_font_size_pt: 15.2
-
-layout:
-  person_gap_pt: 28
 
 pdf:
   page_format: a5
