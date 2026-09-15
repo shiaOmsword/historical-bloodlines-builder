@@ -128,6 +128,30 @@ class GraphvizGenealogyRenderer(_BaseGraphvizGenealogyRenderer):
         )
         self.last_geometry: dict[str, object] | None = None
 
+    def _readable_marriage_sign_xs(self, left_position, right_position) -> tuple[float, float]:
+        """Center ``=`` between people, then clamp it to the actual text gap.
+
+        Centering on the empty gap alone makes the sign look shifted whenever
+        one spouse has a much wider label. Prefer the midpoint between person
+        anchors, but never let the sign enter either label's clearance area.
+        """
+
+        gap_left = left_position.right + 5.0
+        gap_right = right_position.left - 5.0
+        available_width = max(0.0, gap_right - gap_left)
+        sign_width = min(self.MARRIAGE_SIGN_WIDTH, available_width)
+        if sign_width <= 0.05:
+            center_x = (left_position.right + right_position.left) / 2
+            return center_x, center_x
+
+        preferred_center = (
+            left_position.center_x + right_position.center_x
+        ) / 2
+        minimum_center = gap_left + sign_width / 2
+        maximum_center = gap_right - sign_width / 2
+        center_x = min(max(preferred_center, minimum_center), maximum_center)
+        return center_x - sign_width / 2, center_x + sign_width / 2
+
     def render(
         self,
         genealogy: Genealogy,
@@ -184,17 +208,14 @@ class GraphvizGenealogyRenderer(_BaseGraphvizGenealogyRenderer):
             pos_a = person_positions[person_a_id]
             pos_b = person_positions[person_b_id]
 
-            gap_center_x = (pos_a.right + pos_b.left) / 2
             name_y_a = pos_a.top_y + self.TEXT_PADDING_Y + self.LINE_HEIGHT / 2
             name_y_b = pos_b.top_y + self.TEXT_PADDING_Y + self.LINE_HEIGHT / 2
             center_y = (name_y_a + name_y_b) / 2
             upper_y = center_y - self.MARRIAGE_LINE_GAP / 2
             lower_y = center_y + self.MARRIAGE_LINE_GAP / 2
 
-            available_width = max(0.0, pos_b.left - pos_a.right - 10.0)
-            sign_width = min(self.MARRIAGE_SIGN_WIDTH, available_width)
-            left_x = gap_center_x - sign_width / 2
-            right_x = gap_center_x + sign_width / 2
+            left_x, right_x = self._readable_marriage_sign_xs(pos_a, pos_b)
+            sign_width = right_x - left_x
 
             marriage_connectors[pair] = (left_x, right_x, lower_y)
             if sign_width > 0.05:
