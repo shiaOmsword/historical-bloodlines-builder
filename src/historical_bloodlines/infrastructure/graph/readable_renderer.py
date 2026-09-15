@@ -28,6 +28,42 @@ from historical_bloodlines.infrastructure.graph.renderer import (
 )
 
 
+MARRIAGE_TEXT_CLEARANCE = 5.0
+MARRIAGE_SIGN_WIDTH = 12.0
+
+
+def _marriage_source_center(
+    left_center: float,
+    left_width: float,
+    right_center: float,
+    right_width: float,
+) -> float:
+    """Return the visual/source centre shared by layout and rendered ``=``.
+
+    Prefer the midpoint between spouse anchors. When unequal label widths put
+    that midpoint too close to either label, clamp just enough to keep a full
+    marriage sign inside the readable text gap. Sharing this calculation with
+    family layout prevents the sign correction from recreating a tiny dogleg in
+    descendant connectors.
+    """
+
+    if left_center > right_center:
+        left_center, right_center = right_center, left_center
+        left_width, right_width = right_width, left_width
+
+    gap_left = left_center + left_width / 2 + MARRIAGE_TEXT_CLEARANCE
+    gap_right = right_center - right_width / 2 - MARRIAGE_TEXT_CLEARANCE
+    available_width = max(0.0, gap_right - gap_left)
+    sign_width = min(MARRIAGE_SIGN_WIDTH, available_width)
+    if sign_width <= 0.05:
+        return (left_center + left_width / 2 + right_center - right_width / 2) / 2
+
+    preferred = (left_center + right_center) / 2
+    minimum = gap_left + sign_width / 2
+    maximum = gap_right - sign_width / 2
+    return min(max(preferred, minimum), maximum)
+
+
 class _ReadablePersonLabelFormatter(PersonLabelFormatter):
     """Keep the approved typeface and leading without hiding connectors."""
 
@@ -57,6 +93,27 @@ class _ReadablePersonLabelFormatter(PersonLabelFormatter):
             '<<TABLE BORDER="0" CELLBORDER="0" CELLSPACING="0" '
             f'CELLPADDING="0" WIDTH="{width}" HEIGHT="{height}">'
             f"{''.join(rows)}</TABLE>>"
+        )
+
+
+class _ReadableOrthogonalGenealogyLayout(OrthogonalGenealogyLayout):
+    """Use the same marriage source centre as the readable renderer."""
+
+    @staticmethod
+    def _family_source_offset(parent_ids, component) -> float:
+        if len(parent_ids) == 1:
+            return component.person_offsets[parent_ids[0]]
+
+        ordered = sorted(
+            parent_ids,
+            key=lambda person_id: component.person_offsets[person_id],
+        )
+        left_id, right_id = ordered[0], ordered[-1]
+        return _marriage_source_center(
+            component.person_offsets[left_id],
+            component.person_boxes[left_id].width,
+            component.person_offsets[right_id],
+            component.person_boxes[right_id].width,
         )
 
 
@@ -111,7 +168,7 @@ class GraphvizGenealogyRenderer(_BaseGraphvizGenealogyRenderer):
             max_text_line=self.MAX_TEXT_LINE,
             max_name_line=self.MAX_NAME_LINE,
         )
-        self._layout = OrthogonalGenealogyLayout(
+        self._layout = _ReadableOrthogonalGenealogyLayout(
             LayoutConfig(
                 person_gap=self.PERSON_GAP,
                 component_gap=self.COMPONENT_GAP,
@@ -128,28 +185,25 @@ class GraphvizGenealogyRenderer(_BaseGraphvizGenealogyRenderer):
         )
         self.last_geometry: dict[str, object] | None = None
 
-    def _readable_marriage_sign_xs(self, left_position, right_position) -> tuple[float, float]:
-        """Center ``=`` between people, then clamp it to the actual text gap.
+    def _readable_marriage_sign_xs(
+        self,
+        left_position,
+        right_position,
+    ) -> tuple[float, float]:
+        """Place ``=`` on the same source centre used by family layout."""
 
-        Centering on the empty gap alone makes the sign look shifted whenever
-        one spouse has a much wider label. Prefer the midpoint between person
-        anchors, but never let the sign enter either label's clearance area.
-        """
-
-        gap_left = left_position.right + 5.0
-        gap_right = right_position.left - 5.0
+        if left_position.center_x > right_position.center_x:
+            left_position, right_position = right_position, left_position
+        gap_left = left_position.right + MARRIAGE_TEXT_CLEARANCE
+        gap_right = right_position.left - MARRIAGE_TEXT_CLEARANCE
         available_width = max(0.0, gap_right - gap_left)
         sign_width = min(self.MARRIAGE_SIGN_WIDTH, available_width)
-        if sign_width <= 0.05:
-            center_x = (left_position.right + right_position.left) / 2
-            return center_x, center_x
-
-        preferred_center = (
-            left_position.center_x + right_position.center_x
-        ) / 2
-        minimum_center = gap_left + sign_width / 2
-        maximum_center = gap_right - sign_width / 2
-        center_x = min(max(preferred_center, minimum_center), maximum_center)
+        center_x = _marriage_source_center(
+            left_position.center_x,
+            left_position.width,
+            right_position.center_x,
+            right_position.width,
+        )
         return center_x - sign_width / 2, center_x + sign_width / 2
 
     def render(
