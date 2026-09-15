@@ -106,19 +106,20 @@ def test_luxembourg_two_spouses_and_descendant_branch_is_routable(
 ) -> None:
     """Mirror the publisher workbook around Sigismund's two marriages.
 
-    Wenceslaus must remain before Sigismund as Charles IV's elder represented son,
-    while Sigismund sits between Maria and Barbara so both marriage pairs are
-    adjacent. Elizabeth then continues from the Sigismund/Barbara marriage into
-    her own marriage component.
+    Only the historically requested Wenceslaus-before-Sigismund order is manual.
+    The partner component must orient itself so that Maria stays on the side of
+    her own father, while Barbara remains adjacent to Sigismund for Elizabeth's
+    descendant branch. That keeps both ancestry trees planar without inventing
+    extra spreadsheet order hints for spouses.
     """
 
     genealogy = Genealogy()
     charles = _person(genealogy, 1, "Charles IV", 4)
     louis = _person(genealogy, 2, "Louis I of Anjou", 4)
     wenceslaus = _person(genealogy, 3, "Wenceslaus IV", 5, 10)
-    maria = _person(genealogy, 4, "Maria of Anjou", 5, 20)
-    sigismund = _person(genealogy, 5, "Sigismund", 5, 30)
-    barbara = _person(genealogy, 6, "Barbara of Cilli", 5, 40)
+    sigismund = _person(genealogy, 4, "Sigismund", 5, 20)
+    maria = _person(genealogy, 5, "Maria of Anjou", 5)
+    barbara = _person(genealogy, 6, "Barbara of Cilli", 5)
     albert = _person(genealogy, 7, "Albert V of Habsburg", 6)
     elizabeth = _person(genealogy, 8, "Elizabeth", 6)
     ladislaus = _person(genealogy, 9, "Ladislaus Posthumous", 7)
@@ -157,6 +158,6 @@ def test_luxembourg_two_spouses_and_descendant_branch_is_routable(
     assert renderer.last_geometry is not None
     positions = renderer.last_geometry["positions"]
     assert positions[wenceslaus.id].center_x < positions[sigismund.id].center_x
-    assert positions[maria.id].center_x < positions[sigismund.id].center_x
-    assert positions[sigismund.id].center_x < positions[barbara.id].center_x
+    assert positions[barbara.id].center_x < positions[sigismund.id].center_x
+    assert positions[sigismund.id].center_x < positions[maria.id].center_x
     assert renderer.last_geometry["issues"] == ()
