@@ -101,18 +101,18 @@ def test_two_parent_descendant_uses_same_axis_as_readable_marriage_sign(
     assert renderer.last_geometry["issues"] == ()
 
 
-def test_luxembourg_sibling_order_does_not_reorder_sigismunds_spouses(
+def test_luxembourg_sibling_order_with_explicit_spouse_side_is_routable(
     tmp_path,
 ) -> None:
-    """Wenceslaus before Sigismund is a sibling hint, not spouse ordering."""
+    """Keep Wenceslaus left of Sigismund and Sigismund's spouse branch outside it."""
 
     genealogy = Genealogy()
     charles = _person(genealogy, 1, "Charles IV", 4)
     louis = _person(genealogy, 2, "Louis I of Anjou", 4)
     wenceslaus = _person(genealogy, 3, "Wenceslaus IV", 5, 10)
     sigismund = _person(genealogy, 4, "Sigismund", 5, 20)
-    maria = _person(genealogy, 5, "Maria of Anjou", 5)
-    barbara = _person(genealogy, 6, "Barbara of Cilli", 5)
+    maria = _person(genealogy, 5, "Maria of Anjou", 5, 30)
+    barbara = _person(genealogy, 6, "Barbara of Cilli", 5, 40)
 
     genealogy.marriages.add(MarriageRelation.create(sigismund.id, maria.id))
     genealogy.marriages.add(MarriageRelation.create(sigismund.id, barbara.id))
@@ -132,4 +132,6 @@ def test_luxembourg_sibling_order_does_not_reorder_sigismunds_spouses(
     assert renderer.last_geometry is not None
     positions = renderer.last_geometry["positions"]
     assert positions[wenceslaus.id].center_x < positions[sigismund.id].center_x
+    assert positions[sigismund.id].center_x < positions[maria.id].center_x
+    assert positions[maria.id].center_x < positions[barbara.id].center_x
     assert renderer.last_geometry["issues"] == ()
