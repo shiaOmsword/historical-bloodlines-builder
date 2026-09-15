@@ -1,0 +1,66 @@
+from __future__ import annotations
+
+import pytest
+
+from historical_bloodlines.domain import (
+    FamilyChildRelation,
+    Genealogy,
+    MarriageRelation,
+    Person,
+    PersonLayoutHint,
+    SourcePersonKey,
+)
+from historical_bloodlines.infrastructure.graph import GraphvizGenealogyRenderer
+from historical_bloodlines.infrastructure.graph.models import PersonPosition
+
+
+def _person(genealogy: Genealogy, row: int, name: str, generation: int) -> Person:
+    person = Person.create(
+        source_key=SourcePersonKey("Publisher regression", row),
+        name=name,
+        layout_hint=PersonLayoutHint(generation, None),
+    )
+    genealogy.add_person(person)
+    return person
+
+
+def test_asymmetric_spouse_labels_keep_marriage_sign_visually_centered() -> None:
+    renderer = GraphvizGenealogyRenderer()
+    left = PersonPosition(center_x=100.0, top_y=0.0, width=140.0, height=30.0)
+    right = PersonPosition(center_x=260.0, top_y=0.0, width=40.0, height=30.0)
+
+    sign_left, sign_right = renderer._readable_marriage_sign_xs(left, right)
+
+    assert (sign_left + sign_right) / 2 == pytest.approx(180.0)
+    assert sign_left >= left.right + 5.0 - 1e-6
+    assert sign_right <= right.left - 5.0 + 1e-6
+
+
+def test_single_parent_stays_on_axis_of_child_inside_marriage_component() -> None:
+    genealogy = Genealogy()
+    parent = _person(genealogy, 1, "Parent", 1)
+    child = _person(genealogy, 2, "Child", 2)
+    spouse = _person(genealogy, 3, "Spouse with a longer name", 2)
+    genealogy.marriages.add(MarriageRelation.create(child.id, spouse.id))
+    genealogy.family_child_relations.add(
+        FamilyChildRelation(frozenset((parent.id,)), child.id)
+    )
+
+    renderer = GraphvizGenealogyRenderer()
+    layout = renderer._layout
+    components, by_person = layout._build_partner_components(genealogy)
+    families = layout._build_families(genealogy, by_person, components)
+    graph = layout._build_component_graph(components, families, by_person)
+    centers, levels = layout._place_components(
+        genealogy,
+        components,
+        graph,
+        by_person,
+        families,
+    )
+    positions, _, _ = layout._place_people(components, centers, levels)
+
+    assert positions[parent.id].center_x == pytest.approx(
+        positions[child.id].center_x,
+        abs=1e-6,
+    )
