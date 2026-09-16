@@ -198,8 +198,10 @@ class OrthogonalConnectorRouter:
     LINE_CLEARANCE = 4.0
     END_GAP = 5.0
     EXTERIOR_GAP = 18.0
-    MAX_GROUP_SEARCH_STATES = 50000
-    MAX_ROUTE_CANDIDATES = 14
+    EXTERIOR_LANES = 3
+    EXTERIOR_LANE_STEP = 12.0
+    MAX_GROUP_SEARCH_STATES = 120000
+    MAX_ROUTE_CANDIDATES = 20
 
     def __init__(self, positions, families, marriage_connectors) -> None:
         self.positions: dict[object, PersonPosition] = positions
@@ -367,27 +369,34 @@ class OrthogonalConnectorRouter:
             add(self.canonical(family, y), "separate_bus_lane")
             y += 6.0
 
-        # A long single-parent feeder can always leave the crowded family field
-        # through the outside margin and return immediately above its target.
-        # This is intentionally explicit rather than relying on A* to discover a
-        # much longer path that would never be locally optimal. Both sides are
-        # retained so global backtracking can choose whichever margin stays free.
+        # Exterior fallbacks must first leave the whole parent row vertically.
+        # Going sideways directly at one person's bottom can cut through a taller
+        # label on the same generation.  Approach the target from a clear lane
+        # above its row for the symmetric reason. Multiple outside lanes let two
+        # independent long feeders coexist without sharing a segment.
         if len(family.parent_ids) == 1 and len(targets) == 1:
             target = targets[0]
-            min_x = min(box.left for box in self.boxes) - self.EXTERIOR_GAP
-            max_x = max(box.right for box in self.boxes) + self.EXTERIOR_GAP
-            for exterior_x in (min_x, max_x):
-                add(
-                    _segments(
-                        (
-                            source,
-                            (exterior_x, source[1]),
-                            (exterior_x, target[1]),
-                            target,
+            escape_y = max(source[1], self.row_bottom[parent_top] + 7.0)
+            approach_y = target[1] - 7.0
+            if escape_y <= approach_y + EPS:
+                min_x = min(box.left for box in self.boxes) - self.EXTERIOR_GAP
+                max_x = max(box.right for box in self.boxes) + self.EXTERIOR_GAP
+                for lane in range(self.EXTERIOR_LANES):
+                    offset = lane * self.EXTERIOR_LANE_STEP
+                    for exterior_x in (min_x - offset, max_x + offset):
+                        add(
+                            _segments(
+                                (
+                                    source,
+                                    (source[0], escape_y),
+                                    (exterior_x, escape_y),
+                                    (exterior_x, approach_y),
+                                    (target[0], approach_y),
+                                    target,
+                                )
+                            ),
+                            "exterior_route",
                         )
-                    ),
-                    "exterior_route",
-                )
 
         target_orders: list[tuple[Point, ...]] = []
         natural = tuple(
@@ -431,9 +440,9 @@ class OrthogonalConnectorRouter:
         strategy_rank = {
             "straight": 0,
             "family_bus": 1,
-            "exterior_route": 2,
-            "separate_bus_lane": 3,
-            "obstacle_route": 4,
+            "obstacle_route": 2,
+            "exterior_route": 3,
+            "separate_bus_lane": 4,
         }
         candidates.sort(
             key=lambda route: (
@@ -491,9 +500,12 @@ class OrthogonalConnectorRouter:
                 )
 
             ordered = sorted(options, key=lambda item: (item[0], item[1]))
-            minimum = ordered[0][0]
-            next_choices = [item for item in ordered if item[0] == minimum]
-            for _, _, family, candidates in next_choices:
+            # Most-constrained-first is only a heuristic here. Candidate sets are
+            # order-dependent because already-owned routes become obstacles. If
+            # every geometry for the most constrained family blocks a flexible
+            # family, the flexible family must be allowed to claim its corridor
+            # first. Try the remaining ownership orders before declaring failure.
+            for _, _, family, candidates in ordered:
                 rest = tuple(item for item in remaining if item is not family)
                 for route in candidates:
                     result = search(rest, [*routes, route])
