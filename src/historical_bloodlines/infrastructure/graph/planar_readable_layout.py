@@ -2,25 +2,24 @@
 
 The workbook's ``order`` column is useful for birth order inside one sibling
 family, but a numeric value on an unrelated cousin must not force two ancestry
-branches to cross.  The base layout remains responsible for component sizing,
-generation placement and manual partner orientation.  This pass only chooses a
+branches to cross. The base layout remains responsible for component sizing,
+generation placement and manual partner orientation. This pass only chooses a
 safer left-to-right order for components that share a generation.
 """
 from __future__ import annotations
 
 from collections import defaultdict
 from heapq import heappop, heappush
-import math
 
 
 def install_planar_readable_layout() -> None:
-    """Install the planarity-aware readable layout after renderer import.
-
-    Kept as a small integration hook so the specialised readable renderer can
-    retain its marriage-source calculation without introducing an import cycle.
-    """
+    """Install planarity-aware layout and a bounded row-local route search."""
 
     from historical_bloodlines.infrastructure.graph import readable_renderer
+    from historical_bloodlines.infrastructure.graph.connector_routing import (
+        OrthogonalConnectorRouter,
+        RoutingConflict,
+    )
 
     base = readable_renderer._ReadableOrthogonalGenealogyLayout
     if getattr(base, "_planar_ancestry_ordering", False):
@@ -102,9 +101,6 @@ def install_planar_readable_layout() -> None:
                             ),
                         )
                         serial += 1
-
-            # Defensive fallback: duplicate/contradictory workbook hints are
-            # validated earlier, but never make this pass invent an ordering.
             return result if len(result) == len(row) else list(row)
 
         def _place_components(
@@ -129,10 +125,6 @@ def install_planar_readable_layout() -> None:
             for row in rows.values():
                 row.sort(key=lambda component_id: centers[component_id])
 
-            # Map every child component to the exact family source that should
-            # anchor it. A marriage component can legitimately receive ancestry
-            # from two independent branches, in which case their desired centres
-            # are averaged rather than forcing either branch through the other.
             incoming = defaultdict(list)
             for family in families:
                 parent_component = family.parent_component_id
@@ -148,13 +140,11 @@ def install_planar_readable_layout() -> None:
                         )
                     )
 
-            # A few top-down sweeps are enough because generations form a DAG.
-            # Recompute desired positions after every packed row so descendants
-            # follow the ancestry order established immediately above them.
+            first_level = min(rows, default=0)
             for _ in range(4):
                 changed = False
                 for level in sorted(rows):
-                    if level == min(rows):
+                    if level == first_level:
                         continue
                     row = rows[level]
                     fallback = {
@@ -198,12 +188,9 @@ def install_planar_readable_layout() -> None:
                         centers,
                         components,
                     )
-
                 if not changed:
                     break
 
-            # Verify the final packing itself: the router still performs the
-            # definitive label/line intersection validation afterwards.
             for level, row in rows.items():
                 for left_id, right_id in zip(row, row[1:]):
                     minimum = (
@@ -215,9 +202,76 @@ def install_planar_readable_layout() -> None:
                         raise ValueError(
                             f"Planar row packing overlapped generation {level + 1}"
                         )
-
             return centers, levels
+
+    def _bounded_plan(self):
+        """Solve one target row at a time after layout removes branch reversals."""
+
+        self.search_count = 0
+        routes = []
+        by_target_row = defaultdict(list)
+        for family in self.families:
+            target_row = round(min(y for _, y in self.targets(family)), 5)
+            by_target_row[target_row].append(family)
+
+        last_blocked = None
+        for target_row in sorted(by_target_row):
+            group = tuple(
+                sorted(by_target_row[target_row], key=self._family_priority)
+            )
+            states = 0
+
+            def search(remaining, local):
+                nonlocal states, last_blocked
+                states += 1
+                if states > 4000:
+                    return None
+                if not remaining:
+                    return list(local)
+
+                occupied = [*routes, *local]
+                options = []
+                for family in remaining:
+                    candidates = self._route_candidates(family, occupied)
+                    if not candidates:
+                        last_blocked = family
+                        return None
+                    options.append(
+                        (
+                            len(candidates),
+                            self._family_priority(family),
+                            family,
+                            candidates,
+                        )
+                    )
+
+                for _, _, family, candidates in sorted(
+                    options,
+                    key=lambda item: (item[0], item[1]),
+                ):
+                    rest = tuple(item for item in remaining if item is not family)
+                    for route in candidates[:8]:
+                        result = search(rest, [*local, route])
+                        if result is not None:
+                            return result
+                return None
+
+            planned = search(group, [])
+            if planned is None:
+                family = last_blocked or group[0]
+                raise RoutingConflict(
+                    family,
+                    "No downward, collision-free route satisfies the planar "
+                    "generation layout after bounded row backtracking",
+                )
+            routes.extend(planned)
+
+        issues = self.issues(routes)
+        if issues:
+            raise ValueError(f"Unsafe connector plan: {issues[0]!r}")
+        return tuple(routes)
 
     readable_renderer._ReadableOrthogonalGenealogyLayout = (
         _PlanarReadableOrthogonalGenealogyLayout
     )
+    OrthogonalConnectorRouter.plan = _bounded_plan
