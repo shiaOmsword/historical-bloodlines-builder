@@ -197,8 +197,9 @@ class OrthogonalConnectorRouter:
     LABEL_CLEARANCE = 3.0
     LINE_CLEARANCE = 4.0
     END_GAP = 5.0
+    EXTERIOR_GAP = 18.0
     MAX_GROUP_SEARCH_STATES = 50000
-    MAX_ROUTE_CANDIDATES = 12
+    MAX_ROUTE_CANDIDATES = 14
 
     def __init__(self, positions, families, marriage_connectors) -> None:
         self.positions: dict[object, PersonPosition] = positions
@@ -326,14 +327,7 @@ class OrthogonalConnectorRouter:
         family,
         previous: list[FamilyRoute],
     ) -> list[FamilyRoute]:
-        """Enumerate a small deterministic set of collision-free routes.
-
-        The old router committed to the first clear route for every family. In a
-        dense generation that makes route ownership order-dependent: a locally
-        shortest connector can close the only corridor required by a later
-        sibling bus. Keeping several bus lanes and obstacle-route variants lets
-        the search backtrack without allowing crossings or upward hairpins.
-        """
+        """Enumerate deterministic collision-free alternatives for one family."""
 
         source = self.source(family)
         targets = self.targets(family)
@@ -372,6 +366,28 @@ class OrthogonalConnectorRouter:
         while y <= upper + EPS:
             add(self.canonical(family, y), "separate_bus_lane")
             y += 6.0
+
+        # A long single-parent feeder can always leave the crowded family field
+        # through the outside margin and return immediately above its target.
+        # This is intentionally explicit rather than relying on A* to discover a
+        # much longer path that would never be locally optimal. Both sides are
+        # retained so global backtracking can choose whichever margin stays free.
+        if len(family.parent_ids) == 1 and len(targets) == 1:
+            target = targets[0]
+            min_x = min(box.left for box in self.boxes) - self.EXTERIOR_GAP
+            max_x = max(box.right for box in self.boxes) + self.EXTERIOR_GAP
+            for exterior_x in (min_x, max_x):
+                add(
+                    _segments(
+                        (
+                            source,
+                            (exterior_x, source[1]),
+                            (exterior_x, target[1]),
+                            target,
+                        )
+                    ),
+                    "exterior_route",
+                )
 
         target_orders: list[tuple[Point, ...]] = []
         natural = tuple(
@@ -415,8 +431,9 @@ class OrthogonalConnectorRouter:
         strategy_rank = {
             "straight": 0,
             "family_bus": 1,
-            "separate_bus_lane": 2,
-            "obstacle_route": 3,
+            "exterior_route": 2,
+            "separate_bus_lane": 3,
+            "obstacle_route": 4,
         }
         candidates.sort(
             key=lambda route: (
@@ -442,15 +459,7 @@ class OrthogonalConnectorRouter:
         )
 
     def _plan_all_families(self, families: tuple) -> list[FamilyRoute] | None:
-        """Bounded global backtracking for route ownership.
-
-        Dense sheets can require reconsidering a route from an earlier target
-        generation: a long feeder may cross several rows and consume the only
-        channel needed below. Row-local backtracking cannot repair that. The
-        global search always chooses the currently most constrained family and
-        retries both family ownership order and route geometry before declaring
-        the layout impossible.
-        """
+        """Bounded global backtracking for route ownership."""
 
         states = 0
         last_blocked = None
@@ -483,9 +492,6 @@ class OrthogonalConnectorRouter:
 
             ordered = sorted(options, key=lambda item: (item[0], item[1]))
             minimum = ordered[0][0]
-            # Route scarcity is the primary signal. Trying every family with the
-            # same minimum candidate count is enough to escape order-dependent
-            # dead ends without multiplying the search by all permutations.
             next_choices = [item for item in ordered if item[0] == minimum]
             for _, _, family, candidates in next_choices:
                 rest = tuple(item for item in remaining if item is not family)
@@ -603,9 +609,6 @@ class OrthogonalConnectorRouter:
                 neighbors.append((x_pos - 1, y_pos, 1))
             if x_pos + 1 < len(xs):
                 neighbors.append((x_pos + 1, y_pos, 1))
-            # Descendant routing is monotone downward. Going back upward would
-            # create the same visual hairpins that this router is intended to
-            # remove.
             if y_pos + 1 < len(ys):
                 neighbors.append((x_pos, y_pos + 1, 2))
 
