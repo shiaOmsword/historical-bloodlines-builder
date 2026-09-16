@@ -1,6 +1,7 @@
 """Orthogonal family routes with explicit ownership and geometry validation."""
 from __future__ import annotations
 
+from collections import defaultdict
 from dataclasses import dataclass
 from heapq import heappop, heappush
 from itertools import count
@@ -196,6 +197,8 @@ class OrthogonalConnectorRouter:
     LABEL_CLEARANCE = 3.0
     LINE_CLEARANCE = 4.0
     END_GAP = 5.0
+    MAX_GROUP_SEARCH_STATES = 12000
+    MAX_ROUTE_CANDIDATES = 12
 
     def __init__(self, positions, families, marriage_connectors) -> None:
         self.positions: dict[object, PersonPosition] = positions
@@ -306,91 +309,228 @@ class OrthogonalConnectorRouter:
             for box in obstacles
         )
 
-    def plan(self) -> tuple[FamilyRoute, ...]:
-        self.search_count = 0
-        routes: list[FamilyRoute] = []
-
-        def priority(family) -> tuple:
-            source = self.source(family)
-            targets = self.targets(family)
-            # Families competing for the same descendant generation are the
-            # critical topological case. Reserve a sibling bus before any
-            # single-child feeder (including long links from an older row),
-            # because the feeder can detour around an owned bus while a bus may
-            # have no planar way through a feeder already spanning its target
-            # row. Source generation remains the next tie-breaker.
-            return (
-                min(point[1] for point in targets),
-                len(targets) == 1,
-                source[1],
-                source[0],
-                tuple(str(person_id) for person_id in family.parent_ids),
+    @staticmethod
+    def _route_key(items: tuple[Segment, ...]) -> tuple:
+        return tuple(
+            (
+                round(segment.x1, 5),
+                round(segment.y1, 5),
+                round(segment.x2, 5),
+                round(segment.y2, 5),
             )
+            for segment in items
+        )
 
-        for family in sorted(self.families, key=priority):
-            source = self.source(family)
-            targets = self.targets(family)
-            obstacles = self._obstacles(family, routes)
-            proposed = self.canonical(family)
-            strategy = "straight" if len(proposed) == 1 else "family_bus"
+    def _route_candidates(
+        self,
+        family,
+        previous: list[FamilyRoute],
+    ) -> list[FamilyRoute]:
+        """Enumerate a small deterministic set of collision-free routes.
 
-            if not self._clear(proposed, obstacles):
-                parent_top = max(
-                    self.positions[parent_id].top_y
-                    for parent_id in family.parent_ids
-                )
-                lower = self.row_bottom[parent_top] + 7.0
-                upper = min(y for _, y in targets) - 7.0
-                candidates = []
-                y = lower
-                while y <= upper + EPS:
-                    items = self.canonical(family, y)
-                    if self._clear(items, obstacles):
-                        candidates.append(
-                            (sum(segment.length for segment in items), y, items)
-                        )
-                    y += 6.0
+        The old router committed to the first clear route for every family. In a
+        dense generation that makes route ownership order-dependent: a locally
+        shortest connector can close the only corridor required by a later
+        sibling bus. Keeping several bus lanes and obstacle-route variants lets
+        the group solver backtrack without allowing crossings or upward hairpins.
+        """
 
-                if candidates:
-                    proposed = min(candidates, key=lambda item: item[:2])[2]
-                    strategy = "separate_bus_lane"
-                else:
-                    tree: list[Segment] = []
-                    branch_floor = self.row_bottom[parent_top] + 7.0
-                    for target in sorted(
-                        targets,
-                        key=lambda point: (
-                            point[1],
-                            abs(point[0] - source[0]),
-                            point[0],
-                        ),
-                    ):
-                        path = self._find_path(
-                            source,
-                            target,
-                            obstacles,
-                            tree,
-                            branch_floor,
-                        )
-                        if path is None:
-                            raise RoutingConflict(
-                                family,
-                                "No downward, collision-free route satisfies "
-                                "the current generation/order hints",
-                            )
-                        tree.extend(path)
-                    proposed = normalize(tree)
-                    strategy = "obstacle_route"
+        source = self.source(family)
+        targets = self.targets(family)
+        obstacles = self._obstacles(family, previous)
+        seen: set[tuple] = set()
+        candidates: list[FamilyRoute] = []
 
-            routes.append(
+        def add(items: tuple[Segment, ...], strategy: str) -> None:
+            items = normalize(items)
+            if not items or not self._clear(items, obstacles):
+                return
+            key = self._route_key(items)
+            if key in seen:
+                return
+            seen.add(key)
+            candidates.append(
                 FamilyRoute(
                     family=family,
                     source=source,
                     targets=targets,
-                    segments=proposed,
+                    segments=items,
                     strategy=strategy,
                 )
             )
+
+        add(self.canonical(family), "straight" if len(self.canonical(family)) == 1 else "family_bus")
+
+        parent_top = max(
+            self.positions[parent_id].top_y
+            for parent_id in family.parent_ids
+        )
+        lower = self.row_bottom[parent_top] + 7.0
+        upper = min(y for _, y in targets) - 7.0
+        y = lower
+        while y <= upper + EPS:
+            add(self.canonical(family, y), "separate_bus_lane")
+            y += 6.0
+
+        # If fixed bus lanes are blocked, build a monotone routing tree. Target
+        # insertion order can change which branch owns a narrow channel, so keep
+        # the natural, reversed and edge-first orders as alternatives.
+        target_orders: list[tuple[Point, ...]] = []
+        natural = tuple(
+            sorted(
+                targets,
+                key=lambda point: (
+                    point[1],
+                    abs(point[0] - source[0]),
+                    point[0],
+                ),
+            )
+        )
+        for order in (
+            natural,
+            tuple(reversed(natural)),
+            tuple(sorted(targets, key=lambda point: (point[0], point[1]))),
+            tuple(sorted(targets, key=lambda point: (-point[0], point[1]))),
+        ):
+            if order not in target_orders:
+                target_orders.append(order)
+
+        branch_floor = self.row_bottom[parent_top] + 7.0
+        for order in target_orders:
+            tree: list[Segment] = []
+            valid = True
+            for target in order:
+                path = self._find_path(
+                    source,
+                    target,
+                    obstacles,
+                    tree,
+                    branch_floor,
+                )
+                if path is None:
+                    valid = False
+                    break
+                tree.extend(path)
+            if valid:
+                add(normalize(tree), "obstacle_route")
+
+        strategy_rank = {
+            "straight": 0,
+            "family_bus": 1,
+            "separate_bus_lane": 2,
+            "obstacle_route": 3,
+        }
+        candidates.sort(
+            key=lambda route: (
+                strategy_rank.get(route.strategy, 9),
+                sum(segment.length for segment in route.segments),
+                len(route.segments),
+                self._route_key(route.segments),
+            )
+        )
+        return candidates[: self.MAX_ROUTE_CANDIDATES]
+
+    def _family_priority(self, family) -> tuple:
+        source = self.source(family)
+        targets = self.targets(family)
+        straight = len(targets) == 1 and abs(source[0] - targets[0][0]) < EPS
+        return (
+            len(targets) == 1,
+            not straight,
+            source[1],
+            source[0],
+            tuple(str(person_id) for person_id in family.parent_ids),
+        )
+
+    def _plan_target_group(
+        self,
+        families: tuple,
+        previous: list[FamilyRoute],
+    ) -> list[FamilyRoute] | None:
+        """Backtrack route ownership inside one descendant row.
+
+        Families ending on different rows are solved top-to-bottom. Within a row
+        there is no universally safe greedy ordering (Luxembourg and Valois need
+        opposite choices), so use a bounded search. Adding routes only adds
+        obstacles: if any remaining family has zero candidates the current state
+        is immediately impossible and we backtrack.
+        """
+
+        states = 0
+        last_blocked = None
+
+        def search(
+            remaining: tuple,
+            local: list[FamilyRoute],
+        ) -> list[FamilyRoute] | None:
+            nonlocal states, last_blocked
+            states += 1
+            if states > self.MAX_GROUP_SEARCH_STATES:
+                return None
+            if not remaining:
+                return list(local)
+
+            options = []
+            occupied = [*previous, *local]
+            for family in remaining:
+                routes = self._route_candidates(family, occupied)
+                if not routes:
+                    last_blocked = family
+                    return None
+                options.append(
+                    (
+                        len(routes),
+                        self._family_priority(family),
+                        family,
+                        routes,
+                    )
+                )
+
+            # Most constrained family first, while preserving the bus/straight
+            # preference as a deterministic tie-breaker. If that choice blocks a
+            # later family, try another ownership order before giving up.
+            for _, _, family, routes in sorted(
+                options,
+                key=lambda item: (item[0], item[1]),
+            ):
+                rest = tuple(item for item in remaining if item is not family)
+                for route in routes:
+                    result = search(rest, [*local, route])
+                    if result is not None:
+                        return result
+            return None
+
+        result = search(families, [])
+        if result is None and last_blocked is not None:
+            self._last_conflict_family = last_blocked
+        return result
+
+    def plan(self) -> tuple[FamilyRoute, ...]:
+        self.search_count = 0
+        self._last_conflict_family = None
+        routes: list[FamilyRoute] = []
+
+        by_target_row: dict[float, list] = defaultdict(list)
+        for family in self.families:
+            target_row = round(min(y for _, y in self.targets(family)), 5)
+            by_target_row[target_row].append(family)
+
+        for target_row in sorted(by_target_row):
+            group = tuple(
+                sorted(
+                    by_target_row[target_row],
+                    key=self._family_priority,
+                )
+            )
+            planned = self._plan_target_group(group, routes)
+            if planned is None:
+                family = self._last_conflict_family or group[0]
+                raise RoutingConflict(
+                    family,
+                    "No downward, collision-free route satisfies "
+                    "the current generation/order hints after bounded backtracking",
+                )
+            routes.extend(planned)
 
         issues = self.issues(routes)
         if issues:
