@@ -197,7 +197,7 @@ class OrthogonalConnectorRouter:
     LABEL_CLEARANCE = 3.0
     LINE_CLEARANCE = 4.0
     END_GAP = 5.0
-    MAX_GROUP_SEARCH_STATES = 12000
+    MAX_GROUP_SEARCH_STATES = 50000
     MAX_ROUTE_CANDIDATES = 12
 
     def __init__(self, positions, families, marriage_connectors) -> None:
@@ -332,7 +332,7 @@ class OrthogonalConnectorRouter:
         dense generation that makes route ownership order-dependent: a locally
         shortest connector can close the only corridor required by a later
         sibling bus. Keeping several bus lanes and obstacle-route variants lets
-        the group solver backtrack without allowing crossings or upward hairpins.
+        the search backtrack without allowing crossings or upward hairpins.
         """
 
         source = self.source(family)
@@ -359,7 +359,8 @@ class OrthogonalConnectorRouter:
                 )
             )
 
-        add(self.canonical(family), "straight" if len(self.canonical(family)) == 1 else "family_bus")
+        canonical = self.canonical(family)
+        add(canonical, "straight" if len(canonical) == 1 else "family_bus")
 
         parent_top = max(
             self.positions[parent_id].top_y
@@ -372,9 +373,6 @@ class OrthogonalConnectorRouter:
             add(self.canonical(family, y), "separate_bus_lane")
             y += 6.0
 
-        # If fixed bus lanes are blocked, build a monotone routing tree. Target
-        # insertion order can change which branch owns a narrow channel, so keep
-        # the natural, reversed and edge-first orders as alternatives.
         target_orders: list[tuple[Point, ...]] = []
         natural = tuple(
             sorted(
@@ -435,6 +433,7 @@ class OrthogonalConnectorRouter:
         targets = self.targets(family)
         straight = len(targets) == 1 and abs(source[0] - targets[0][0]) < EPS
         return (
+            min(point[1] for point in targets),
             len(targets) == 1,
             not straight,
             source[1],
@@ -442,18 +441,15 @@ class OrthogonalConnectorRouter:
             tuple(str(person_id) for person_id in family.parent_ids),
         )
 
-    def _plan_target_group(
-        self,
-        families: tuple,
-        previous: list[FamilyRoute],
-    ) -> list[FamilyRoute] | None:
-        """Backtrack route ownership inside one descendant row.
+    def _plan_all_families(self, families: tuple) -> list[FamilyRoute] | None:
+        """Bounded global backtracking for route ownership.
 
-        Families ending on different rows are solved top-to-bottom. Within a row
-        there is no universally safe greedy ordering (Luxembourg and Valois need
-        opposite choices), so use a bounded search. Adding routes only adds
-        obstacles: if any remaining family has zero candidates the current state
-        is immediately impossible and we backtrack.
+        Dense sheets can require reconsidering a route from an earlier target
+        generation: a long feeder may cross several rows and consume the only
+        channel needed below. Row-local backtracking cannot repair that. The
+        global search always chooses the currently most constrained family and
+        retries both family ownership order and route geometry before declaring
+        the layout impossible.
         """
 
         states = 0
@@ -461,41 +457,40 @@ class OrthogonalConnectorRouter:
 
         def search(
             remaining: tuple,
-            local: list[FamilyRoute],
+            routes: list[FamilyRoute],
         ) -> list[FamilyRoute] | None:
             nonlocal states, last_blocked
             states += 1
             if states > self.MAX_GROUP_SEARCH_STATES:
                 return None
             if not remaining:
-                return list(local)
+                return list(routes)
 
             options = []
-            occupied = [*previous, *local]
             for family in remaining:
-                routes = self._route_candidates(family, occupied)
-                if not routes:
+                candidates = self._route_candidates(family, routes)
+                if not candidates:
                     last_blocked = family
                     return None
                 options.append(
                     (
-                        len(routes),
+                        len(candidates),
                         self._family_priority(family),
                         family,
-                        routes,
+                        candidates,
                     )
                 )
 
-            # Most constrained family first, while preserving the bus/straight
-            # preference as a deterministic tie-breaker. If that choice blocks a
-            # later family, try another ownership order before giving up.
-            for _, _, family, routes in sorted(
-                options,
-                key=lambda item: (item[0], item[1]),
-            ):
+            ordered = sorted(options, key=lambda item: (item[0], item[1]))
+            minimum = ordered[0][0]
+            # Route scarcity is the primary signal. Trying every family with the
+            # same minimum candidate count is enough to escape order-dependent
+            # dead ends without multiplying the search by all permutations.
+            next_choices = [item for item in ordered if item[0] == minimum]
+            for _, _, family, candidates in next_choices:
                 rest = tuple(item for item in remaining if item is not family)
-                for route in routes:
-                    result = search(rest, [*local, route])
+                for route in candidates:
+                    result = search(rest, [*routes, route])
                     if result is not None:
                         return result
             return None
@@ -508,29 +503,15 @@ class OrthogonalConnectorRouter:
     def plan(self) -> tuple[FamilyRoute, ...]:
         self.search_count = 0
         self._last_conflict_family = None
-        routes: list[FamilyRoute] = []
-
-        by_target_row: dict[float, list] = defaultdict(list)
-        for family in self.families:
-            target_row = round(min(y for _, y in self.targets(family)), 5)
-            by_target_row[target_row].append(family)
-
-        for target_row in sorted(by_target_row):
-            group = tuple(
-                sorted(
-                    by_target_row[target_row],
-                    key=self._family_priority,
-                )
+        families = tuple(sorted(self.families, key=self._family_priority))
+        routes = self._plan_all_families(families)
+        if routes is None:
+            family = self._last_conflict_family or families[0]
+            raise RoutingConflict(
+                family,
+                "No downward, collision-free route satisfies "
+                "the current generation/order hints after bounded global backtracking",
             )
-            planned = self._plan_target_group(group, routes)
-            if planned is None:
-                family = self._last_conflict_family or group[0]
-                raise RoutingConflict(
-                    family,
-                    "No downward, collision-free route satisfies "
-                    "the current generation/order hints after bounded backtracking",
-                )
-            routes.extend(planned)
 
         issues = self.issues(routes)
         if issues:
