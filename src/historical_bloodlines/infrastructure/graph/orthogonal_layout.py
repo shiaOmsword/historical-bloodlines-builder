@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from dataclasses import dataclass
+from itertools import permutations
 import math
 
 import networkx as nx
@@ -50,6 +51,114 @@ class _Potentials:
 
 class OrthogonalGenealogyLayout(FixedGenealogyLayout):
     CORRIDOR_HALF_WIDTH = 9.0
+
+    def _order_partner_component(self, genealogy, person_ids):
+        """Orient multi-spouse components toward their external ancestry.
+
+        The base layout already minimizes marriage span and respects explicit
+        person order. When two equally compact orientations remain, use direct
+        ancestors from the same generation as a planar tie-breaker. This keeps
+        an incoming branch on the same side as its child without turning spouse
+        order into a workbook-only workaround.
+        """
+        baseline = super()._order_partner_component(genealogy, person_ids)
+        if len(baseline) <= 2 or len(baseline) > 7:
+            return baseline
+
+        edges = {
+            pair
+            for pair in self._partnership_pairs(genealogy)
+            if pair.issubset(person_ids)
+        }
+        if len(edges) < 2:
+            return baseline
+
+        manual_people = [
+            person_id
+            for person_id in baseline
+            if genealogy.persons[person_id].layout_hint.order is not None
+        ]
+        manual_pairs = [
+            (left_id, right_id)
+            for left_index, left_id in enumerate(manual_people)
+            for right_id in manual_people[left_index + 1 :]
+            if genealogy.persons[left_id].layout_hint.order
+            < genealogy.persons[right_id].layout_hint.order
+        ]
+
+        external_ancestry = defaultdict(list)
+        for relation in genealogy.family_child_relations:
+            if relation.child_id not in person_ids:
+                continue
+            for parent_id in relation.parent_ids:
+                if parent_id in person_ids:
+                    continue
+                parent = genealogy.persons[parent_id]
+                external_ancestry[relation.child_id].append(
+                    (
+                        parent.layout_hint.generation,
+                        parent.source_key.row_number,
+                    )
+                )
+
+        anchors = {}
+        for person_id, values in external_ancestry.items():
+            explicit = [item for item in values if item[0] is not None]
+            anchors[person_id] = min(explicit or values, key=lambda item: item[1])
+
+        ancestry_pairs = []
+        anchored_people = [person_id for person_id in baseline if person_id in anchors]
+        for left_index, first_id in enumerate(anchored_people):
+            first_generation, first_row = anchors[first_id]
+            for second_id in anchored_people[left_index + 1 :]:
+                second_generation, second_row = anchors[second_id]
+                if (
+                    first_generation is None
+                    or second_generation is None
+                    or first_generation != second_generation
+                    or first_row == second_row
+                ):
+                    continue
+                ancestry_pairs.append(
+                    (first_id, second_id)
+                    if first_row < second_row
+                    else (second_id, first_id)
+                )
+
+        if not ancestry_pairs:
+            return baseline
+
+        source_index = {person_id: index for index, person_id in enumerate(baseline)}
+
+        def score(order):
+            index = {person_id: position for position, person_id in enumerate(order)}
+            manual_violations = sum(
+                index[left_id] > index[right_id]
+                for left_id, right_id in manual_pairs
+            )
+            marriage_span = sum(
+                abs(index[first_id] - index[second_id])
+                for pair in edges
+                for first_id, second_id in (tuple(pair),)
+            )
+            ancestry_violations = sum(
+                index[left_id] > index[right_id]
+                for left_id, right_id in ancestry_pairs
+            )
+            displacement = sum(
+                abs(index[person_id] - source_index[person_id])
+                for person_id in order
+            )
+            lexical = tuple(source_index[person_id] for person_id in order)
+            return (
+                manual_violations,
+                marriage_span,
+                ancestry_violations,
+                displacement,
+                lexical,
+            )
+
+        return min(permutations(baseline), key=score)
 
     def _build_partner_components(self, genealogy):
         components, by_person = super()._build_partner_components(genealogy)
@@ -135,6 +244,104 @@ class OrthogonalGenealogyLayout(FixedGenealogyLayout):
 
         return components, by_person
 
+    @staticmethod
+    def _keep_automatic_side_branches_outside_sibling_buses(
+        rows,
+        original,
+        levels,
+        components,
+        component_graph,
+        component_by_person,
+        families,
+    ) -> None:
+        """Do not let an automatic cousin branch split a sibling bus.
+
+        Manual order remains authoritative. Unnumbered components may move across
+        numbered slots, however, when their own parent is clearly to one side of
+        a multi-child family. This preserves the planar parent order instead of
+        forcing the router to cross a wide sibling bus later.
+        """
+
+        seen_states = set()
+        for _ in range(max(1, len(components))):
+            state = tuple(
+                (level, tuple(ids))
+                for level, ids in sorted(rows.items())
+            )
+            if state in seen_states:
+                break
+            seen_states.add(state)
+            changed = False
+
+            for family in families:
+                family_parent = family.parent_component_id
+                parent_level = levels[family_parent]
+                parent_row = rows[parent_level]
+                family_parent_index = parent_row.index(family_parent)
+
+                children_by_level = defaultdict(list)
+                for child_id in family.child_ids:
+                    child_component = component_by_person[child_id]
+                    if child_component == family_parent:
+                        continue
+                    children_by_level[levels[child_component]].append(child_component)
+
+                for child_level, family_children in children_by_level.items():
+                    family_children = list(dict.fromkeys(family_children))
+                    if len(family_children) < 2:
+                        continue
+
+                    ids = rows[child_level]
+                    child_indices = sorted(ids.index(item) for item in family_children)
+                    left_index, right_index = child_indices[0], child_indices[-1]
+                    middle = ids[left_index : right_index + 1]
+                    child_set = set(family_children)
+
+                    move_left = []
+                    move_right = []
+                    for intruder in middle:
+                        if intruder in child_set:
+                            continue
+                        if components[intruder].order_hint is not None:
+                            continue
+
+                        predecessors = [
+                            parent
+                            for parent in component_graph.predecessors(intruder)
+                            if levels[parent] == parent_level
+                        ]
+                        if not predecessors:
+                            continue
+                        predecessor_indices = [
+                            parent_row.index(parent)
+                            for parent in predecessors
+                            if parent in parent_row
+                        ]
+                        if not predecessor_indices:
+                            continue
+                        if max(predecessor_indices) < family_parent_index:
+                            move_left.append(intruder)
+                        elif min(predecessor_indices) > family_parent_index:
+                            move_right.append(intruder)
+
+                    if not move_left and not move_right:
+                        continue
+
+                    movers = set(move_left) | set(move_right)
+                    kept_middle = [item for item in middle if item not in movers]
+                    ids[left_index : right_index + 1] = [
+                        *move_left,
+                        *kept_middle,
+                        *move_right,
+                    ]
+                    old_xs = sorted(original[component_id] for component_id in ids)
+                    for component_id, x in zip(ids, old_xs):
+                        original[component_id] = x
+                    changed = True
+
+            if not changed:
+                break
+
     def _place_components(
         self,
         genealogy,
@@ -160,6 +367,16 @@ class OrthogonalGenealogyLayout(FixedGenealogyLayout):
                 original[component_id],
                 components[component_id].min_source_row,
             ))
+
+        self._keep_automatic_side_branches_outside_sibling_buses(
+            rows,
+            original,
+            levels,
+            components,
+            component_graph,
+            component_by_person,
+            families,
+        )
 
         # A childless automatically ordered side branch must not split the two
         # ancestors of a married pair. This fixes cases such as Baldwin between

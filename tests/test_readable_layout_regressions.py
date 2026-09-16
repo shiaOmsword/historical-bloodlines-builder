@@ -170,6 +170,33 @@ def test_long_ancestry_link_reserves_empty_column_not_text_mask() -> None:
     assert "BGCOLOR" not in renderer._labels.html_label(intervening)
 
 
+def test_marriage_sign_prefers_spouse_anchor_midpoint_with_safe_clamp() -> None:
+    renderer = GraphvizGenealogyRenderer()
+    left = PersonPosition(center_x=100.0, top_y=0.0, width=140.0, height=30.0)
+    right = PersonPosition(center_x=260.0, top_y=0.0, width=40.0, height=30.0)
+
+    sign_left, sign_right = renderer._readable_marriage_sign_xs(left, right)
+    center = (sign_left + sign_right) / 2
+
+    # The preferred anchor midpoint is 180, but a full 12 pt sign needs one
+    # additional point of clearance from the wider left label.
+    assert center == pytest.approx(181.0)
+    assert sign_left >= left.right + 5.0 - 1e-6
+    assert sign_right <= right.left - 5.0 + 1e-6
+
+
+def test_marriage_sign_clamps_to_safe_gap_when_anchor_midpoint_is_too_close() -> None:
+    renderer = GraphvizGenealogyRenderer()
+    left = PersonPosition(center_x=100.0, top_y=0.0, width=180.0, height=30.0)
+    right = PersonPosition(center_x=260.0, top_y=0.0, width=40.0, height=30.0)
+
+    sign_left, sign_right = renderer._readable_marriage_sign_xs(left, right)
+
+    assert sign_left >= left.right + 5.0 - 1e-6
+    assert sign_right <= right.left - 5.0 + 1e-6
+    assert sign_right - sign_left <= renderer.MARRIAGE_SIGN_WIDTH + 1e-6
+
+
 def _crossed_generations(*, swapped: bool = False) -> Genealogy:
     genealogy = Genealogy()
     first_father = _person(

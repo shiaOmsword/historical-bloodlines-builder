@@ -28,6 +28,42 @@ from historical_bloodlines.infrastructure.graph.renderer import (
 )
 
 
+MARRIAGE_TEXT_CLEARANCE = 5.0
+MARRIAGE_SIGN_WIDTH = 12.0
+
+
+def _marriage_source_center(
+    left_center: float,
+    left_width: float,
+    right_center: float,
+    right_width: float,
+) -> float:
+    """Return the visual/source centre shared by layout and rendered ``=``.
+
+    Prefer the midpoint between spouse anchors. When unequal label widths put
+    that midpoint too close to either label, clamp just enough to keep a full
+    marriage sign inside the readable text gap. Sharing this calculation with
+    family layout prevents the sign correction from recreating a tiny dogleg in
+    descendant connectors.
+    """
+
+    if left_center > right_center:
+        left_center, right_center = right_center, left_center
+        left_width, right_width = right_width, left_width
+
+    gap_left = left_center + left_width / 2 + MARRIAGE_TEXT_CLEARANCE
+    gap_right = right_center - right_width / 2 - MARRIAGE_TEXT_CLEARANCE
+    available_width = max(0.0, gap_right - gap_left)
+    sign_width = min(MARRIAGE_SIGN_WIDTH, available_width)
+    if sign_width <= 0.05:
+        return (left_center + left_width / 2 + right_center - right_width / 2) / 2
+
+    preferred = (left_center + right_center) / 2
+    minimum = gap_left + sign_width / 2
+    maximum = gap_right - sign_width / 2
+    return min(max(preferred, minimum), maximum)
+
+
 class _ReadablePersonLabelFormatter(PersonLabelFormatter):
     """Keep the approved typeface and leading without hiding connectors."""
 
@@ -57,6 +93,98 @@ class _ReadablePersonLabelFormatter(PersonLabelFormatter):
             '<<TABLE BORDER="0" CELLBORDER="0" CELLSPACING="0" '
             f'CELLPADDING="0" WIDTH="{width}" HEIGHT="{height}">'
             f"{''.join(rows)}</TABLE>>"
+        )
+
+
+class _ReadableOrthogonalGenealogyLayout(OrthogonalGenealogyLayout):
+    """Use readable marriage centres and planar two-person orientation."""
+
+    def _order_partner_component(self, genealogy, person_ids):
+        ordered = super()._order_partner_component(genealogy, person_ids)
+        if len(ordered) != 2:
+            return ordered
+
+        # An explicit person order remains authoritative. Automatic orientation
+        # is only needed when a two-person marriage joins branches whose ancestry
+        # depths differ; otherwise source order is the least surprising default.
+        if any(
+            genealogy.persons[person_id].layout_hint.order is not None
+            for person_id in ordered
+        ):
+            return ordered
+
+        anchors = {}
+        for person_id in ordered:
+            person = genealogy.persons[person_id]
+            parent_orders = []
+            generation_gaps = []
+            parent_rows = []
+            for relation in genealogy.family_child_relations:
+                if relation.child_id != person_id:
+                    continue
+                for parent_id in relation.parent_ids:
+                    if parent_id in person_ids:
+                        continue
+                    parent = genealogy.persons[parent_id]
+                    if parent.layout_hint.order is not None:
+                        parent_orders.append(parent.layout_hint.order)
+                    if (
+                        person.layout_hint.generation is not None
+                        and parent.layout_hint.generation is not None
+                    ):
+                        generation_gaps.append(
+                            person.layout_hint.generation
+                            - parent.layout_hint.generation
+                        )
+                    parent_rows.append(parent.source_key.row_number)
+            if parent_orders:
+                anchors[person_id] = (
+                    max(generation_gaps, default=1),
+                    sum(parent_orders) / len(parent_orders),
+                    min(parent_rows, default=person.source_key.row_number),
+                )
+
+        if len(anchors) != 2:
+            return ordered
+        if max(anchor[0] for anchor in anchors.values()) <= 1:
+            return ordered
+
+        first_order = anchors[ordered[0]][1]
+        second_order = anchors[ordered[1]][1]
+        if math.isclose(first_order, second_order, abs_tol=1e-9):
+            return ordered
+
+        # Put the partner continuing the visually earlier parent branch on the
+        # left. For a long cross-generation link this keeps its spouse outside a
+        # sibling bus instead of placing the reserved vertical corridor through
+        # that bus (the late-Capetian Philip of Evreux / Joan II case).
+        original_index = {person_id: index for index, person_id in enumerate(ordered)}
+        return tuple(
+            sorted(
+                ordered,
+                key=lambda person_id: (
+                    anchors[person_id][1],
+                    anchors[person_id][2],
+                    original_index[person_id],
+                ),
+            )
+        )
+
+    @staticmethod
+    def _family_source_offset(parent_ids, component) -> float:
+        if len(parent_ids) == 1:
+            return component.person_offsets[parent_ids[0]]
+
+        ordered = sorted(
+            parent_ids,
+            key=lambda person_id: component.person_offsets[person_id],
+        )
+        left_id, right_id = ordered[0], ordered[-1]
+        return _marriage_source_center(
+            component.person_offsets[left_id],
+            component.person_boxes[left_id].width,
+            component.person_offsets[right_id],
+            component.person_boxes[right_id].width,
         )
 
 
@@ -111,7 +239,7 @@ class GraphvizGenealogyRenderer(_BaseGraphvizGenealogyRenderer):
             max_text_line=self.MAX_TEXT_LINE,
             max_name_line=self.MAX_NAME_LINE,
         )
-        self._layout = OrthogonalGenealogyLayout(
+        self._layout = _ReadableOrthogonalGenealogyLayout(
             LayoutConfig(
                 person_gap=self.PERSON_GAP,
                 component_gap=self.COMPONENT_GAP,
@@ -127,6 +255,27 @@ class GraphvizGenealogyRenderer(_BaseGraphvizGenealogyRenderer):
             self._labels,
         )
         self.last_geometry: dict[str, object] | None = None
+
+    def _readable_marriage_sign_xs(
+        self,
+        left_position,
+        right_position,
+    ) -> tuple[float, float]:
+        """Place ``=`` on the same source centre used by family layout."""
+
+        if left_position.center_x > right_position.center_x:
+            left_position, right_position = right_position, left_position
+        gap_left = left_position.right + MARRIAGE_TEXT_CLEARANCE
+        gap_right = right_position.left - MARRIAGE_TEXT_CLEARANCE
+        available_width = max(0.0, gap_right - gap_left)
+        sign_width = min(self.MARRIAGE_SIGN_WIDTH, available_width)
+        center_x = _marriage_source_center(
+            left_position.center_x,
+            left_position.width,
+            right_position.center_x,
+            right_position.width,
+        )
+        return center_x - sign_width / 2, center_x + sign_width / 2
 
     def render(
         self,
@@ -184,17 +333,14 @@ class GraphvizGenealogyRenderer(_BaseGraphvizGenealogyRenderer):
             pos_a = person_positions[person_a_id]
             pos_b = person_positions[person_b_id]
 
-            gap_center_x = (pos_a.right + pos_b.left) / 2
             name_y_a = pos_a.top_y + self.TEXT_PADDING_Y + self.LINE_HEIGHT / 2
             name_y_b = pos_b.top_y + self.TEXT_PADDING_Y + self.LINE_HEIGHT / 2
             center_y = (name_y_a + name_y_b) / 2
             upper_y = center_y - self.MARRIAGE_LINE_GAP / 2
             lower_y = center_y + self.MARRIAGE_LINE_GAP / 2
 
-            available_width = max(0.0, pos_b.left - pos_a.right - 10.0)
-            sign_width = min(self.MARRIAGE_SIGN_WIDTH, available_width)
-            left_x = gap_center_x - sign_width / 2
-            right_x = gap_center_x + sign_width / 2
+            left_x, right_x = self._readable_marriage_sign_xs(pos_a, pos_b)
+            sign_width = right_x - left_x
 
             marriage_connectors[pair] = (left_x, right_x, lower_y)
             if sign_width > 0.05:
@@ -209,6 +355,7 @@ class GraphvizGenealogyRenderer(_BaseGraphvizGenealogyRenderer):
             person_positions,
             families,
             marriage_connectors,
+            reserved_corridors=getattr(self._layout, "reserved_corridors", ()),
         )
         try:
             routes = router.plan()

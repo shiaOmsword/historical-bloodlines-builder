@@ -1,6 +1,7 @@
 """Orthogonal family routes with explicit ownership and geometry validation."""
 from __future__ import annotations
 
+from collections import defaultdict
 from dataclasses import dataclass
 from heapq import heappop, heappush
 from itertools import count
@@ -196,11 +197,23 @@ class OrthogonalConnectorRouter:
     LABEL_CLEARANCE = 3.0
     LINE_CLEARANCE = 4.0
     END_GAP = 5.0
+    EXTERIOR_GAP = 18.0
+    EXTERIOR_LANES = 3
+    EXTERIOR_LANE_STEP = 12.0
+    MAX_GROUP_SEARCH_STATES = 30000
+    MAX_ROUTE_CANDIDATES = 20
 
-    def __init__(self, positions, families, marriage_connectors) -> None:
+    def __init__(
+        self,
+        positions,
+        families,
+        marriage_connectors,
+        reserved_corridors=(),
+    ) -> None:
         self.positions: dict[object, PersonPosition] = positions
         self.families = families
         self.marriage_connectors = marriage_connectors
+        self.reserved_corridors = frozenset(reserved_corridors)
         self.boxes = tuple(
             Rect(
                 position.left - self.LABEL_CLEARANCE,
@@ -306,84 +319,310 @@ class OrthogonalConnectorRouter:
             for box in obstacles
         )
 
-    def plan(self) -> tuple[FamilyRoute, ...]:
-        self.search_count = 0
-        routes: list[FamilyRoute] = []
-
-        def priority(family) -> tuple:
-            source = self.source(family)
-            targets = self.targets(family)
-            straight = len(targets) == 1 and abs(source[0] - targets[0][0]) < EPS
-            return (
-                not straight,
-                source[1],
-                source[0],
-                tuple(str(person_id) for person_id in family.parent_ids),
+    @staticmethod
+    def _route_key(items: tuple[Segment, ...]) -> tuple:
+        return tuple(
+            (
+                round(segment.x1, 5),
+                round(segment.y1, 5),
+                round(segment.x2, 5),
+                round(segment.y2, 5),
             )
+            for segment in items
+        )
 
-        for family in sorted(self.families, key=priority):
-            source = self.source(family)
-            targets = self.targets(family)
-            obstacles = self._obstacles(family, routes)
-            proposed = self.canonical(family)
-            strategy = "straight" if len(proposed) == 1 else "family_bus"
+    @staticmethod
+    def _family_key(family) -> tuple:
+        return (
+            tuple(sorted(str(person_id) for person_id in family.parent_ids)),
+            tuple(sorted(str(person_id) for person_id in family.child_ids)),
+        )
 
-            if not self._clear(proposed, obstacles):
-                parent_top = max(
-                    self.positions[parent_id].top_y
-                    for parent_id in family.parent_ids
-                )
-                lower = self.row_bottom[parent_top] + 7.0
-                upper = min(y for _, y in targets) - 7.0
-                candidates = []
-                y = lower
-                while y <= upper + EPS:
-                    items = self.canonical(family, y)
-                    if self._clear(items, obstacles):
-                        candidates.append(
-                            (sum(segment.length for segment in items), y, items)
-                        )
-                    y += 6.0
+    def _uses_reserved_corridor(self, family) -> bool:
+        return (
+            len(family.parent_ids) == 1
+            and len(family.child_ids) == 1
+            and family.child_ids[0] in self.reserved_corridors
+        )
 
-                if candidates:
-                    proposed = min(candidates, key=lambda item: item[:2])[2]
-                    strategy = "separate_bus_lane"
-                else:
-                    tree: list[Segment] = []
-                    branch_floor = self.row_bottom[parent_top] + 7.0
-                    for target in sorted(
-                        targets,
-                        key=lambda point: (
-                            point[1],
-                            abs(point[0] - source[0]),
-                            point[0],
-                        ),
-                    ):
-                        path = self._find_path(
-                            source,
-                            target,
-                            obstacles,
-                            tree,
-                            branch_floor,
-                        )
-                        if path is None:
-                            raise RoutingConflict(
-                                family,
-                                "No downward, collision-free route satisfies "
-                                "the current generation/order hints",
-                            )
-                        tree.extend(path)
-                    proposed = normalize(tree)
-                    strategy = "obstacle_route"
+    def _route_candidates(
+        self,
+        family,
+        previous: list[FamilyRoute],
+    ) -> list[FamilyRoute]:
+        """Enumerate deterministic collision-free alternatives for one family."""
 
-            routes.append(
+        source = self.source(family)
+        targets = self.targets(family)
+        obstacles = self._obstacles(family, previous)
+        static_obstacles = self._obstacles(family, [])
+        seen: set[tuple] = set()
+        candidates: list[FamilyRoute] = []
+
+        def append_candidate(items: tuple[Segment, ...], strategy: str) -> None:
+            key = self._route_key(items)
+            if key in seen:
+                return
+            seen.add(key)
+            candidates.append(
                 FamilyRoute(
                     family=family,
                     source=source,
                     targets=targets,
-                    segments=proposed,
+                    segments=items,
                     strategy=strategy,
                 )
+            )
+
+        def add(items: tuple[Segment, ...], strategy: str) -> None:
+            items = normalize(items)
+            if not items or not self._clear(items, obstacles):
+                return
+            append_candidate(items, strategy)
+
+        def add_reserved(items: tuple[Segment, ...]) -> None:
+            """Validate a layout-reserved lane by geometry, not route padding.
+
+            Routes ending at an intermediate generation can leave only a tiny
+            strip before that generation's label boxes. Four-point aesthetic
+            padding intentionally does not fit there, but non-touching segments
+            are still unambiguous. The final ``issues`` pass remains the hard
+            safety check for actual crossings/touches/label hits.
+            """
+            items = normalize(items)
+            if not items or not self._clear(items, static_obstacles):
+                return
+            if any(
+                intersection(segment, other_segment) is not None
+                for segment in items
+                for route in previous
+                for other_segment in route.segments
+            ):
+                return
+            append_candidate(items, "reserved_corridor")
+
+        canonical = self.canonical(family)
+        add(canonical, "straight" if len(canonical) == 1 else "family_bus")
+
+        parent_top = max(
+            self.positions[parent_id].top_y
+            for parent_id in family.parent_ids
+        )
+        lower = self.row_bottom[parent_top] + 7.0
+        upper = min(y for _, y in targets) - 7.0
+
+        if self._uses_reserved_corridor(family) and targets:
+            target = targets[0]
+            intermediate_tops = sorted(
+                {
+                    position.top_y
+                    for position in self.positions.values()
+                    if source[1] + EPS < position.top_y < target[1] - EPS
+                }
+            )
+            if intermediate_tops:
+                # Existing routes into the first intermediate row finish at
+                # top_y-END_GAP. Transfer one point below those endpoints and
+                # one point above the label-clearance rectangle, then use the
+                # vertical corridor already reserved by the layout solver.
+                transfer_y = intermediate_tops[0] - self.LABEL_CLEARANCE - 1.0
+                if source[1] + EPS < transfer_y < target[1] - EPS:
+                    add_reserved(
+                        _segments(
+                            (
+                                source,
+                                (source[0], transfer_y),
+                                (target[0], transfer_y),
+                                target,
+                            )
+                        )
+                    )
+
+        y = lower
+        while y <= upper + EPS:
+            add(self.canonical(family, y), "separate_bus_lane")
+            y += 6.0
+
+        if len(family.parent_ids) == 1 and len(targets) == 1:
+            target = targets[0]
+            escape_y = max(source[1], self.row_bottom[parent_top] + 7.0)
+            approach_y = target[1] - 7.0
+            if escape_y <= approach_y + EPS:
+                min_x = min(box.left for box in self.boxes) - self.EXTERIOR_GAP
+                max_x = max(box.right for box in self.boxes) + self.EXTERIOR_GAP
+                for lane in range(self.EXTERIOR_LANES):
+                    offset = lane * self.EXTERIOR_LANE_STEP
+                    for exterior_x in (min_x - offset, max_x + offset):
+                        add(
+                            _segments(
+                                (
+                                    source,
+                                    (source[0], escape_y),
+                                    (exterior_x, escape_y),
+                                    (exterior_x, approach_y),
+                                    (target[0], approach_y),
+                                    target,
+                                )
+                            ),
+                            "exterior_route",
+                        )
+
+        target_orders: list[tuple[Point, ...]] = []
+        natural = tuple(
+            sorted(
+                targets,
+                key=lambda point: (
+                    point[1],
+                    abs(point[0] - source[0]),
+                    point[0],
+                ),
+            )
+        )
+        for order in (
+            natural,
+            tuple(reversed(natural)),
+            tuple(sorted(targets, key=lambda point: (point[0], point[1]))),
+            tuple(sorted(targets, key=lambda point: (-point[0], point[1]))),
+        ):
+            if order not in target_orders:
+                target_orders.append(order)
+
+        branch_floor = self.row_bottom[parent_top] + 7.0
+        for order in target_orders:
+            tree: list[Segment] = []
+            valid = True
+            for target in order:
+                path = self._find_path(
+                    source,
+                    target,
+                    obstacles,
+                    tree,
+                    branch_floor,
+                )
+                if path is None:
+                    valid = False
+                    break
+                tree.extend(path)
+            if valid:
+                add(normalize(tree), "obstacle_route")
+
+        strategy_rank = {
+            "straight": 0,
+            "reserved_corridor": 1,
+            "family_bus": 2,
+            "obstacle_route": 3,
+            "exterior_route": 4,
+            "separate_bus_lane": 5,
+        }
+        candidates.sort(
+            key=lambda route: (
+                strategy_rank.get(route.strategy, 9),
+                sum(segment.length for segment in route.segments),
+                len(route.segments),
+                self._route_key(route.segments),
+            )
+        )
+        return candidates[: self.MAX_ROUTE_CANDIDATES]
+
+    def _family_priority(self, family) -> tuple:
+        source = self.source(family)
+        targets = self.targets(family)
+        straight = len(targets) == 1 and abs(source[0] - targets[0][0]) < EPS
+        return (
+            min(point[1] for point in targets),
+            not self._uses_reserved_corridor(family),
+            -(min(point[1] for point in targets) - source[1]),
+            len(targets) == 1,
+            not straight,
+            source[0],
+            tuple(str(person_id) for person_id in family.parent_ids),
+        )
+
+    def _plan_all_families(self, families: tuple) -> list[FamilyRoute] | None:
+        """Backtrack globally while preserving top-to-bottom route ownership."""
+
+        states = 0
+        last_blocked = None
+        failed_states: set[tuple] = set()
+
+        def search(
+            remaining: tuple,
+            routes: list[FamilyRoute],
+        ) -> list[FamilyRoute] | None:
+            nonlocal states, last_blocked
+            states += 1
+            if states > self.MAX_GROUP_SEARCH_STATES:
+                return None
+            if not remaining:
+                return list(routes)
+
+            state_key = (
+                tuple(sorted(self._family_key(family) for family in remaining)),
+                tuple(
+                    sorted(
+                        (
+                            self._family_key(route.family),
+                            self._route_key(route.segments),
+                        )
+                        for route in routes
+                    )
+                ),
+            )
+            if state_key in failed_states:
+                return None
+
+            options = []
+            for family in remaining:
+                candidates = self._route_candidates(family, routes)
+                if not candidates:
+                    last_blocked = family
+                    failed_states.add(state_key)
+                    return None
+                options.append(
+                    (
+                        len(candidates),
+                        self._family_priority(family),
+                        family,
+                        candidates,
+                    )
+                )
+
+            # Do not let a long link to a lower generation claim a horizontal
+            # separator before the routes into the intervening generation have
+            # terminated. We still backtrack through earlier candidates if a
+            # later row proves impossible, so this is not a greedy commitment.
+            earliest_target = min(item[1][0] for item in options)
+            row_options = [item for item in options if item[1][0] == earliest_target]
+            ordered = sorted(row_options, key=lambda item: (item[0], item[1]))
+            minimum = ordered[0][0]
+            next_choices = [item for item in ordered if item[0] == minimum]
+
+            for _, _, family, candidates in next_choices:
+                rest = tuple(item for item in remaining if item is not family)
+                for route in candidates:
+                    result = search(rest, [*routes, route])
+                    if result is not None:
+                        return result
+
+            failed_states.add(state_key)
+            return None
+
+        result = search(families, [])
+        if result is None and last_blocked is not None:
+            self._last_conflict_family = last_blocked
+        return result
+
+    def plan(self) -> tuple[FamilyRoute, ...]:
+        self.search_count = 0
+        self._last_conflict_family = None
+        families = tuple(sorted(self.families, key=self._family_priority))
+        routes = self._plan_all_families(families)
+        if routes is None:
+            family = self._last_conflict_family or families[0]
+            raise RoutingConflict(
+                family,
+                "No downward, collision-free route satisfies "
+                "the current generation/order hints after bounded global backtracking",
             )
 
         issues = self.issues(routes)
@@ -476,9 +715,6 @@ class OrthogonalConnectorRouter:
                 neighbors.append((x_pos - 1, y_pos, 1))
             if x_pos + 1 < len(xs):
                 neighbors.append((x_pos + 1, y_pos, 1))
-            # Descendant routing is monotone downward. Going back upward would
-            # create the same visual hairpins that this router is intended to
-            # remove.
             if y_pos + 1 < len(ys):
                 neighbors.append((x_pos, y_pos + 1, 2))
 
