@@ -57,6 +57,58 @@ def install_planar_readable_layout() -> None:
             return edges
 
         @staticmethod
+        def _sibling_blocks(row, families, component_by_person, level, levels):
+            """Return blocks that may not be split by unrelated cousins.
+
+            A family bus is planar only when no unrelated component is inserted
+            between its children. Components linked by any multi-child family are
+            therefore unioned into one row block. Marriage components naturally
+            travel with the child person they contain.
+            """
+
+            parent = {component_id: component_id for component_id in row}
+
+            def find(component_id):
+                root = component_id
+                while parent[root] != root:
+                    root = parent[root]
+                while parent[component_id] != component_id:
+                    next_id = parent[component_id]
+                    parent[component_id] = root
+                    component_id = next_id
+                return root
+
+            def join(left_id, right_id):
+                left_root = find(left_id)
+                right_root = find(right_id)
+                if left_root != right_root:
+                    parent[right_root] = left_root
+
+            row_set = set(row)
+            for family in families:
+                children = []
+                seen = set()
+                for child_id in family.child_ids:
+                    component_id = component_by_person[child_id]
+                    if (
+                        component_id in row_set
+                        and levels[component_id] == level
+                        and component_id not in seen
+                    ):
+                        seen.add(component_id)
+                        children.append(component_id)
+                if len(children) < 2:
+                    continue
+                anchor = children[0]
+                for component_id in children[1:]:
+                    join(anchor, component_id)
+
+            grouped = defaultdict(list)
+            for component_id in row:
+                grouped[find(component_id)].append(component_id)
+            return list(grouped.values())
+
+        @staticmethod
         def _topological_row_order(row, desired, precedence, fallback):
             outgoing = defaultdict(set)
             indegree = {component_id: 0 for component_id in row}
@@ -141,7 +193,7 @@ def install_planar_readable_layout() -> None:
                     )
 
             first_level = min(rows, default=0)
-            for _ in range(4):
+            for _ in range(5):
                 changed = False
                 for level in sorted(rows):
                     if level == first_level:
@@ -173,12 +225,33 @@ def install_planar_readable_layout() -> None:
                         level,
                         levels,
                     )
-                    ordered = self._topological_row_order(
+                    blocks = self._sibling_blocks(
                         row,
-                        desired,
-                        precedence,
-                        fallback,
+                        families,
+                        component_by_person,
+                        level,
+                        levels,
                     )
+                    ordered_blocks = []
+                    for block in blocks:
+                        internal = self._topological_row_order(
+                            block,
+                            desired,
+                            precedence,
+                            fallback,
+                        )
+                        block_desired = sum(desired[item] for item in block) / len(block)
+                        block_fallback = sum(fallback[item] for item in block) / len(block)
+                        ordered_blocks.append(
+                            (block_desired, block_fallback, internal)
+                        )
+                    ordered_blocks.sort(key=lambda item: (item[0], item[1]))
+                    ordered = [
+                        component_id
+                        for _, _, block in ordered_blocks
+                        for component_id in block
+                    ]
+
                     if ordered != row:
                         changed = True
                     rows[level] = ordered
