@@ -161,3 +161,70 @@ def test_luxembourg_two_spouses_and_descendant_branch_is_routable(
     assert positions[barbara.id].center_x < positions[sigismund.id].center_x
     assert positions[sigismund.id].center_x < positions[maria.id].center_x
     assert renderer.last_geometry["issues"] == ()
+
+
+def test_valois_side_branch_survives_capetian_sibling_bus(tmp_path) -> None:
+    """Reproduce the publisher Valois collision around Charles -> Philip VI.
+
+    Philip IV owns a wide sibling bus on the same parent row where Charles of
+    Valois has a single descendant. The single-descendant corridor must remain
+    routable without crossing the Capetian sibling bus or changing the manual
+    birth-order hints.
+    """
+
+    genealogy = Genealogy()
+    philip_iii = _person(genealogy, 1, "Philip III", 1, 20)
+    isabella_aragon = _person(genealogy, 2, "Isabella of Aragon", 1, 10)
+    maria_brabant = _person(genealogy, 3, "Maria of Brabant", 1, 30)
+
+    philip_iv = _person(genealogy, 4, "Philip IV", 2, 10)
+    joan_navarre = _person(genealogy, 5, "Joan I of Navarre", 2, 20)
+    charles_valois = _person(genealogy, 6, "Charles of Valois", 2, 30)
+    louis_evreux = _person(genealogy, 7, "Louis of Evreux", 2, 40)
+
+    philip_vi = _person(genealogy, 8, "Philip VI of Valois", 3, 20)
+    louis_x = _person(genealogy, 9, "Louis X", 3, 30)
+    philip_v = _person(genealogy, 10, "Philip V", 3, 40)
+    charles_iv = _person(genealogy, 11, "Charles IV", 3, 50)
+    isabella_france = _person(genealogy, 12, "Isabella of France", 3, 60)
+    edward_ii = _person(genealogy, 13, "Edward II", 3, 70)
+    john_ii = _person(genealogy, 14, "John II", 4, 20)
+
+    genealogy.marriages.add(MarriageRelation.create(philip_iii.id, isabella_aragon.id))
+    genealogy.marriages.add(MarriageRelation.create(philip_iii.id, maria_brabant.id))
+    genealogy.marriages.add(MarriageRelation.create(philip_iv.id, joan_navarre.id))
+    genealogy.marriages.add(MarriageRelation.create(isabella_france.id, edward_ii.id))
+
+    for parent in (philip_iii, isabella_aragon):
+        genealogy.family_child_relations.add(
+            FamilyChildRelation(frozenset((parent.id,)), philip_iv.id)
+        )
+        genealogy.family_child_relations.add(
+            FamilyChildRelation(frozenset((parent.id,)), charles_valois.id)
+        )
+    for parent in (philip_iii, maria_brabant):
+        genealogy.family_child_relations.add(
+            FamilyChildRelation(frozenset((parent.id,)), louis_evreux.id)
+        )
+
+    for child in (louis_x, philip_v, charles_iv, isabella_france):
+        for parent in (philip_iv, joan_navarre):
+            genealogy.family_child_relations.add(
+                FamilyChildRelation(frozenset((parent.id,)), child.id)
+            )
+
+    genealogy.family_child_relations.add(
+        FamilyChildRelation(frozenset((charles_valois.id,)), philip_vi.id)
+    )
+    genealogy.family_child_relations.add(
+        FamilyChildRelation(frozenset((philip_vi.id,)), john_ii.id)
+    )
+
+    renderer = GraphvizGenealogyRenderer()
+    renderer.render(genealogy, tmp_path / "valois.svg", title="Valois")
+
+    assert renderer.last_geometry is not None
+    positions = renderer.last_geometry["positions"]
+    assert positions[philip_vi.id].center_x < positions[louis_x.id].center_x
+    assert positions[charles_valois.id].center_x > positions[philip_iv.id].center_x
+    assert renderer.last_geometry["issues"] == ()
