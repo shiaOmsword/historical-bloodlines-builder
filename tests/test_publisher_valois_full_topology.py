@@ -97,6 +97,38 @@ def test_full_valois_publisher_topology_is_routable(tmp_path) -> None:
     child(john_bohemia, bonne)
 
     renderer = GraphvizGenealogyRenderer()
+
+    # Keep a compact row dump in captured pytest output while this full-sheet
+    # regression is being hardened. It makes the next routing conflict explain
+    # the actual ancestry packing instead of requiring another VPS round-trip.
+    layout = renderer._layout
+    components, by_person = layout._build_partner_components(genealogy)
+    families = layout._build_families(genealogy, by_person, components)
+    graph = layout._build_component_graph(components, families, by_person)
+    centers, levels = layout._place_components(
+        genealogy,
+        components,
+        graph,
+        by_person,
+        families,
+    )
+    rows = {}
+    for level in sorted(set(levels.values())):
+        items = []
+        for component_id, component_level in levels.items():
+            if component_level != level:
+                continue
+            names = "/".join(
+                genealogy.persons[person_id].name
+                for person_id in components[component_id].person_ids
+            )
+            items.append((centers[component_id], names))
+        rows[level + 1] = [
+            f"{name}@{x:.1f}"
+            for x, name in sorted(items)
+        ]
+    print("VALOIS_ROWS", rows)
+
     renderer.render(
         genealogy,
         tmp_path / "full-valois.svg",
