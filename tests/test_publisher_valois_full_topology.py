@@ -27,6 +27,64 @@ def _person(
     return person
 
 
+def _layout_diagnostic(renderer, genealogy: Genealogy) -> str:
+    layout = renderer._layout
+    components, component_by_person = layout._build_partner_components(genealogy)
+    families = layout._build_families(genealogy, component_by_person, components)
+    component_graph = layout._build_component_graph(
+        components,
+        families,
+        component_by_person,
+    )
+    centers, levels = layout._place_components(
+        genealogy,
+        components,
+        component_graph,
+        component_by_person,
+        families,
+    )
+    positions, _, _ = layout._place_people(components, centers, levels)
+
+    rows = []
+    for person_id, position in sorted(
+        positions.items(),
+        key=lambda item: (item[1].top_y, item[1].center_x),
+    ):
+        rows.append(
+            (
+                genealogy.persons[person_id].name,
+                round(position.center_x, 1),
+                round(position.top_y, 1),
+                round(position.width, 1),
+                round(position.height, 1),
+                levels[component_by_person[person_id]] + 1,
+            )
+        )
+
+    family_rows = []
+    for family in sorted(
+        families,
+        key=lambda item: (
+            min(positions[child_id].top_y for child_id in item.child_ids),
+            centers[item.parent_component_id] + item.source_offset,
+        ),
+    ):
+        family_rows.append(
+            (
+                tuple(genealogy.persons[item].name for item in family.parent_ids),
+                tuple(genealogy.persons[item].name for item in family.child_ids),
+                round(centers[family.parent_component_id] + family.source_offset, 1),
+                tuple(round(positions[item].center_x, 1) for item in family.child_ids),
+            )
+        )
+
+    reserved = tuple(
+        genealogy.persons[person_id].name
+        for person_id in getattr(layout, "reserved_corridors", ())
+    )
+    return f"positions={rows!r}\nfamilies={family_rows!r}\nreserved={reserved!r}"
+
+
 def test_full_valois_publisher_topology_is_routable(tmp_path) -> None:
     """Mirror the publisher topology without artificial cousin-order locks.
 
@@ -102,11 +160,14 @@ def test_full_valois_publisher_topology_is_routable(tmp_path) -> None:
     child(john_bohemia, bonne)
 
     renderer = GraphvizGenealogyRenderer()
-    renderer.render(
-        genealogy,
-        tmp_path / "full-valois.svg",
-        title="Поздние Капетинги и ранние Валуа",
-    )
+    try:
+        renderer.render(
+            genealogy,
+            tmp_path / "full-valois.svg",
+            title="Поздние Капетинги и ранние Валуа",
+        )
+    except ValueError as exc:
+        raise AssertionError(f"{exc}\n{_layout_diagnostic(renderer, genealogy)}") from exc
 
     assert renderer.last_geometry is not None
     positions = renderer.last_geometry["positions"]
