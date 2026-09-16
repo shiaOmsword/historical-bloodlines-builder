@@ -28,12 +28,11 @@ def _person(
 
 
 def test_full_valois_publisher_topology_is_routable(tmp_path) -> None:
-    """Mirror the complete publisher topology with bridge branches automatic.
+    """Mirror the publisher topology without artificial cousin-order locks.
 
-    Birth-order hints for the Capetian sibling groups remain hard.  Philip VI,
-    John of Bohemia and the John II/Bonne marriage bridge deliberately have no
-    global cousin-order hint: their placement is a topological concern, not a
-    historical sibling-order requirement.
+    The requested Capetian sibling order remains hard in generations 1-3. The
+    cross-branch marriages in generations 4-5 are automatic because their old
+    numbers were layout scaffolding, not sibling birth-order requirements.
     """
 
     genealogy = Genealogy()
@@ -43,20 +42,20 @@ def test_full_valois_publisher_topology_is_routable(tmp_path) -> None:
     maria_brabant = _person(genealogy, 5, "Maria of Brabant", 1, 30)
 
     louis_evreux = _person(genealogy, 6, "Louis of Evreux", 2, 40)
-    charles_bad = _person(genealogy, 7, "Charles II the Bad", 5, 60)
+    charles_bad = _person(genealogy, 7, "Charles II the Bad", 5)
     philip_iv = _person(genealogy, 8, "Philip IV", 2, 10)
     charles_valois = _person(genealogy, 9, "Charles of Valois", 2, 30)
     joan_navarre = _person(genealogy, 10, "Joan I of Navarre", 2, 20)
 
     louis_x = _person(genealogy, 11, "Louis X", 3, 30)
-    philip_evreux = _person(genealogy, 12, "Philip III of Evreux", 4, 60)
-    joan_ii = _person(genealogy, 13, "Joan II of Navarre", 4, 50)
-    john_i = _person(genealogy, 14, "John I", 4, 40)
+    philip_evreux = _person(genealogy, 12, "Philip III of Evreux", 4)
+    joan_ii = _person(genealogy, 13, "Joan II of Navarre", 4)
+    john_i = _person(genealogy, 14, "John I", 4)
     philip_v = _person(genealogy, 15, "Philip V", 3, 40)
     charles_iv = _person(genealogy, 16, "Charles IV", 3, 50)
     isabella_france = _person(genealogy, 17, "Isabella of France", 3, 60)
     edward_ii = _person(genealogy, 18, "Edward II", 3, 70)
-    edward_iii = _person(genealogy, 19, "Edward III", 4, 30)
+    edward_iii = _person(genealogy, 19, "Edward III", 4)
     philip_vi = _person(genealogy, 20, "Philip VI of Valois", 3)
     john_ii = _person(genealogy, 21, "John II", 4)
     john_bohemia = _person(genealogy, 22, "John of Bohemia", 3)
