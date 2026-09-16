@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from dataclasses import dataclass
+from itertools import permutations
 import math
 
 import networkx as nx
@@ -50,6 +51,114 @@ class _Potentials:
 
 class OrthogonalGenealogyLayout(FixedGenealogyLayout):
     CORRIDOR_HALF_WIDTH = 9.0
+
+    def _order_partner_component(self, genealogy, person_ids):
+        """Orient multi-spouse components toward their external ancestry.
+
+        The base layout already minimizes marriage span and respects explicit
+        person order. When two equally compact orientations remain, use direct
+        ancestors from the same generation as a planar tie-breaker. This keeps
+        an incoming branch on the same side as its child without turning spouse
+        order into a workbook-only workaround.
+        """
+        baseline = super()._order_partner_component(genealogy, person_ids)
+        if len(baseline) <= 2 or len(baseline) > 7:
+            return baseline
+
+        edges = {
+            pair
+            for pair in self._partnership_pairs(genealogy)
+            if pair.issubset(person_ids)
+        }
+        if len(edges) < 2:
+            return baseline
+
+        manual_people = [
+            person_id
+            for person_id in baseline
+            if genealogy.persons[person_id].layout_hint.order is not None
+        ]
+        manual_pairs = [
+            (left_id, right_id)
+            for left_index, left_id in enumerate(manual_people)
+            for right_id in manual_people[left_index + 1 :]
+            if genealogy.persons[left_id].layout_hint.order
+            < genealogy.persons[right_id].layout_hint.order
+        ]
+
+        external_ancestry = defaultdict(list)
+        for relation in genealogy.family_child_relations:
+            if relation.child_id not in person_ids:
+                continue
+            for parent_id in relation.parent_ids:
+                if parent_id in person_ids:
+                    continue
+                parent = genealogy.persons[parent_id]
+                external_ancestry[relation.child_id].append(
+                    (
+                        parent.layout_hint.generation,
+                        parent.source_key.row_number,
+                    )
+                )
+
+        anchors = {}
+        for person_id, values in external_ancestry.items():
+            explicit = [item for item in values if item[0] is not None]
+            anchors[person_id] = min(explicit or values, key=lambda item: item[1])
+
+        ancestry_pairs = []
+        anchored_people = [person_id for person_id in baseline if person_id in anchors]
+        for left_index, first_id in enumerate(anchored_people):
+            first_generation, first_row = anchors[first_id]
+            for second_id in anchored_people[left_index + 1 :]:
+                second_generation, second_row = anchors[second_id]
+                if (
+                    first_generation is None
+                    or second_generation is None
+                    or first_generation != second_generation
+                    or first_row == second_row
+                ):
+                    continue
+                ancestry_pairs.append(
+                    (first_id, second_id)
+                    if first_row < second_row
+                    else (second_id, first_id)
+                )
+
+        if not ancestry_pairs:
+            return baseline
+
+        source_index = {person_id: index for index, person_id in enumerate(baseline)}
+
+        def score(order):
+            index = {person_id: position for position, person_id in enumerate(order)}
+            manual_violations = sum(
+                index[left_id] > index[right_id]
+                for left_id, right_id in manual_pairs
+            )
+            marriage_span = sum(
+                abs(index[first_id] - index[second_id])
+                for pair in edges
+                for first_id, second_id in (tuple(pair),)
+            )
+            ancestry_violations = sum(
+                index[left_id] > index[right_id]
+                for left_id, right_id in ancestry_pairs
+            )
+            displacement = sum(
+                abs(index[person_id] - source_index[person_id])
+                for person_id in order
+            )
+            lexical = tuple(source_index[person_id] for person_id in order)
+            return (
+                manual_violations,
+                marriage_span,
+                ancestry_violations,
+                displacement,
+                lexical,
+            )
+
+        return min(permutations(baseline), key=score)
 
     def _build_partner_components(self, genealogy):
         components, by_person = super()._build_partner_components(genealogy)
