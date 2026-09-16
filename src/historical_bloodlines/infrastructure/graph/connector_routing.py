@@ -203,10 +203,17 @@ class OrthogonalConnectorRouter:
     MAX_GROUP_SEARCH_STATES = 30000
     MAX_ROUTE_CANDIDATES = 20
 
-    def __init__(self, positions, families, marriage_connectors) -> None:
+    def __init__(
+        self,
+        positions,
+        families,
+        marriage_connectors,
+        reserved_corridors=(),
+    ) -> None:
         self.positions: dict[object, PersonPosition] = positions
         self.families = families
         self.marriage_connectors = marriage_connectors
+        self.reserved_corridors = frozenset(reserved_corridors)
         self.boxes = tuple(
             Rect(
                 position.left - self.LABEL_CLEARANCE,
@@ -331,6 +338,13 @@ class OrthogonalConnectorRouter:
             tuple(sorted(str(person_id) for person_id in family.child_ids)),
         )
 
+    def _uses_reserved_corridor(self, family) -> bool:
+        return (
+            len(family.parent_ids) == 1
+            and len(family.child_ids) == 1
+            and family.child_ids[0] in self.reserved_corridors
+        )
+
     def _route_candidates(
         self,
         family,
@@ -371,6 +385,30 @@ class OrthogonalConnectorRouter:
         )
         lower = self.row_bottom[parent_top] + 7.0
         upper = min(y for _, y in targets) - 7.0
+
+        # The layout already made an empty vertical channel for long descendant
+        # links. Honour that contract explicitly instead of asking generic A* to
+        # rediscover the corridor after unrelated routes have occupied it. The
+        # short horizontal transfer stays inside the first inter-generation gap;
+        # several lane heights let sibling buses choose the remaining space.
+        if self._uses_reserved_corridor(family) and targets:
+            target = targets[0]
+            lane_y = lower
+            lane_ceiling = min(upper, lower + 12.0)
+            while lane_y <= lane_ceiling + EPS:
+                add(
+                    _segments(
+                        (
+                            source,
+                            (source[0], lane_y),
+                            (target[0], lane_y),
+                            target,
+                        )
+                    ),
+                    "reserved_corridor",
+                )
+                lane_y += 4.0
+
         y = lower
         while y <= upper + EPS:
             add(self.canonical(family, y), "separate_bus_lane")
@@ -441,10 +479,11 @@ class OrthogonalConnectorRouter:
 
         strategy_rank = {
             "straight": 0,
-            "family_bus": 1,
-            "obstacle_route": 2,
-            "exterior_route": 3,
-            "separate_bus_lane": 4,
+            "reserved_corridor": 1,
+            "family_bus": 2,
+            "obstacle_route": 3,
+            "exterior_route": 4,
+            "separate_bus_lane": 5,
         }
         candidates.sort(
             key=lambda route: (
@@ -461,6 +500,7 @@ class OrthogonalConnectorRouter:
         targets = self.targets(family)
         straight = len(targets) == 1 and abs(source[0] - targets[0][0]) < EPS
         return (
+            not self._uses_reserved_corridor(family),
             min(point[1] for point in targets),
             -(min(point[1] for point in targets) - source[1]),
             len(targets) == 1,
@@ -519,11 +559,18 @@ class OrthogonalConnectorRouter:
                 )
 
             ordered = sorted(options, key=lambda item: (item[0], item[1]))
-            minimum = ordered[0][0]
-            # Candidate scarcity is the strongest ownership signal. Trying ties
-            # still repairs order-dependent dead ends, while memoization prevents
-            # the same route set being explored again through another permutation.
-            next_choices = [item for item in ordered if item[0] == minimum]
+            reserved = [
+                item for item in ordered if self._uses_reserved_corridor(item[2])
+            ]
+            if reserved:
+                # A reserved corridor is a layout guarantee. Let its long feeder
+                # claim that channel before ordinary buses can turn it into an
+                # obstacle; then the normal constrained search routes the rest.
+                next_choices = sorted(reserved, key=lambda item: item[1])
+            else:
+                minimum = ordered[0][0]
+                next_choices = [item for item in ordered if item[0] == minimum]
+
             for _, _, family, candidates in next_choices:
                 rest = tuple(item for item in remaining if item is not family)
                 for route in candidates:
