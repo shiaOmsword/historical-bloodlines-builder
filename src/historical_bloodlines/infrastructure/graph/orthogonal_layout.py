@@ -244,6 +244,104 @@ class OrthogonalGenealogyLayout(FixedGenealogyLayout):
 
         return components, by_person
 
+    @staticmethod
+    def _keep_automatic_side_branches_outside_sibling_buses(
+        rows,
+        original,
+        levels,
+        components,
+        component_graph,
+        component_by_person,
+        families,
+    ) -> None:
+        """Do not let an automatic cousin branch split a sibling bus.
+
+        Manual order remains authoritative. Unnumbered components may move across
+        numbered slots, however, when their own parent is clearly to one side of
+        a multi-child family. This preserves the planar parent order instead of
+        forcing the router to cross a wide sibling bus later.
+        """
+
+        seen_states = set()
+        for _ in range(max(1, len(components))):
+            state = tuple(
+                (level, tuple(ids))
+                for level, ids in sorted(rows.items())
+            )
+            if state in seen_states:
+                break
+            seen_states.add(state)
+            changed = False
+
+            for family in families:
+                family_parent = family.parent_component_id
+                parent_level = levels[family_parent]
+                parent_row = rows[parent_level]
+                family_parent_index = parent_row.index(family_parent)
+
+                children_by_level = defaultdict(list)
+                for child_id in family.child_ids:
+                    child_component = component_by_person[child_id]
+                    if child_component == family_parent:
+                        continue
+                    children_by_level[levels[child_component]].append(child_component)
+
+                for child_level, family_children in children_by_level.items():
+                    family_children = list(dict.fromkeys(family_children))
+                    if len(family_children) < 2:
+                        continue
+
+                    ids = rows[child_level]
+                    child_indices = sorted(ids.index(item) for item in family_children)
+                    left_index, right_index = child_indices[0], child_indices[-1]
+                    middle = ids[left_index : right_index + 1]
+                    child_set = set(family_children)
+
+                    move_left = []
+                    move_right = []
+                    for intruder in middle:
+                        if intruder in child_set:
+                            continue
+                        if components[intruder].order_hint is not None:
+                            continue
+
+                        predecessors = [
+                            parent
+                            for parent in component_graph.predecessors(intruder)
+                            if levels[parent] == parent_level
+                        ]
+                        if not predecessors:
+                            continue
+                        predecessor_indices = [
+                            parent_row.index(parent)
+                            for parent in predecessors
+                            if parent in parent_row
+                        ]
+                        if not predecessor_indices:
+                            continue
+                        if max(predecessor_indices) < family_parent_index:
+                            move_left.append(intruder)
+                        elif min(predecessor_indices) > family_parent_index:
+                            move_right.append(intruder)
+
+                    if not move_left and not move_right:
+                        continue
+
+                    movers = set(move_left) | set(move_right)
+                    kept_middle = [item for item in middle if item not in movers]
+                    ids[left_index : right_index + 1] = [
+                        *move_left,
+                        *kept_middle,
+                        *move_right,
+                    ]
+                    old_xs = sorted(original[component_id] for component_id in ids)
+                    for component_id, x in zip(ids, old_xs):
+                        original[component_id] = x
+                    changed = True
+
+            if not changed:
+                break
+
     def _place_components(
         self,
         genealogy,
@@ -269,6 +367,16 @@ class OrthogonalGenealogyLayout(FixedGenealogyLayout):
                 original[component_id],
                 components[component_id].min_source_row,
             ))
+
+        self._keep_automatic_side_branches_outside_sibling_buses(
+            rows,
+            original,
+            levels,
+            components,
+            component_graph,
+            component_by_person,
+            families,
+        )
 
         # A childless automatically ordered side branch must not split the two
         # ancestors of a married pair. This fixes cases such as Baldwin between
