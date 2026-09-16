@@ -200,7 +200,7 @@ class OrthogonalConnectorRouter:
     EXTERIOR_GAP = 18.0
     EXTERIOR_LANES = 3
     EXTERIOR_LANE_STEP = 12.0
-    MAX_GROUP_SEARCH_STATES = 120000
+    MAX_GROUP_SEARCH_STATES = 30000
     MAX_ROUTE_CANDIDATES = 20
 
     def __init__(self, positions, families, marriage_connectors) -> None:
@@ -324,6 +324,13 @@ class OrthogonalConnectorRouter:
             for segment in items
         )
 
+    @staticmethod
+    def _family_key(family) -> tuple:
+        return (
+            tuple(sorted(str(person_id) for person_id in family.parent_ids)),
+            tuple(sorted(str(person_id) for person_id in family.child_ids)),
+        )
+
     def _route_candidates(
         self,
         family,
@@ -369,11 +376,6 @@ class OrthogonalConnectorRouter:
             add(self.canonical(family, y), "separate_bus_lane")
             y += 6.0
 
-        # Exterior fallbacks must first leave the whole parent row vertically.
-        # Going sideways directly at one person's bottom can cut through a taller
-        # label on the same generation.  Approach the target from a clear lane
-        # above its row for the symmetric reason. Multiple outside lanes let two
-        # independent long feeders coexist without sharing a segment.
         if len(family.parent_ids) == 1 and len(targets) == 1:
             target = targets[0]
             escape_y = max(source[1], self.row_bottom[parent_top] + 7.0)
@@ -460,18 +462,19 @@ class OrthogonalConnectorRouter:
         straight = len(targets) == 1 and abs(source[0] - targets[0][0]) < EPS
         return (
             min(point[1] for point in targets),
+            -(min(point[1] for point in targets) - source[1]),
             len(targets) == 1,
             not straight,
-            source[1],
             source[0],
             tuple(str(person_id) for person_id in family.parent_ids),
         )
 
     def _plan_all_families(self, families: tuple) -> list[FamilyRoute] | None:
-        """Bounded global backtracking for route ownership."""
+        """Bounded global backtracking with memoized route-ownership states."""
 
         states = 0
         last_blocked = None
+        failed_states: set[tuple] = set()
 
         def search(
             remaining: tuple,
@@ -484,11 +487,27 @@ class OrthogonalConnectorRouter:
             if not remaining:
                 return list(routes)
 
+            state_key = (
+                tuple(sorted(self._family_key(family) for family in remaining)),
+                tuple(
+                    sorted(
+                        (
+                            self._family_key(route.family),
+                            self._route_key(route.segments),
+                        )
+                        for route in routes
+                    )
+                ),
+            )
+            if state_key in failed_states:
+                return None
+
             options = []
             for family in remaining:
                 candidates = self._route_candidates(family, routes)
                 if not candidates:
                     last_blocked = family
+                    failed_states.add(state_key)
                     return None
                 options.append(
                     (
@@ -500,17 +519,19 @@ class OrthogonalConnectorRouter:
                 )
 
             ordered = sorted(options, key=lambda item: (item[0], item[1]))
-            # Most-constrained-first is only a heuristic here. Candidate sets are
-            # order-dependent because already-owned routes become obstacles. If
-            # every geometry for the most constrained family blocks a flexible
-            # family, the flexible family must be allowed to claim its corridor
-            # first. Try the remaining ownership orders before declaring failure.
-            for _, _, family, candidates in ordered:
+            minimum = ordered[0][0]
+            # Candidate scarcity is the strongest ownership signal. Trying ties
+            # still repairs order-dependent dead ends, while memoization prevents
+            # the same route set being explored again through another permutation.
+            next_choices = [item for item in ordered if item[0] == minimum]
+            for _, _, family, candidates in next_choices:
                 rest = tuple(item for item in remaining if item is not family)
                 for route in candidates:
                     result = search(rest, [*routes, route])
                     if result is not None:
                         return result
+
+            failed_states.add(state_key)
             return None
 
         result = search(families, [])
