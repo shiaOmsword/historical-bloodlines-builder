@@ -284,6 +284,7 @@ class GraphvizGenealogyRenderer(_BaseGraphvizGenealogyRenderer):
             person_positions,
             families,
             marriage_connectors,
+            reserved_corridors=getattr(self._layout, "reserved_corridors", ()),
         )
         try:
             routes = router.plan()
