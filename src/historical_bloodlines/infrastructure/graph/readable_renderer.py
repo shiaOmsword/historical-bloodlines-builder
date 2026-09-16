@@ -97,7 +97,78 @@ class _ReadablePersonLabelFormatter(PersonLabelFormatter):
 
 
 class _ReadableOrthogonalGenealogyLayout(OrthogonalGenealogyLayout):
-    """Use the same marriage source centre as the readable renderer."""
+    """Use readable marriage centres and planar two-person orientation."""
+
+    def _order_partner_component(self, genealogy, person_ids):
+        ordered = super()._order_partner_component(genealogy, person_ids)
+        if len(ordered) != 2:
+            return ordered
+
+        # An explicit person order remains authoritative. Automatic orientation
+        # is only needed when a two-person marriage joins branches whose ancestry
+        # depths differ; otherwise source order is the least surprising default.
+        if any(
+            genealogy.persons[person_id].layout_hint.order is not None
+            for person_id in ordered
+        ):
+            return ordered
+
+        anchors = {}
+        for person_id in ordered:
+            person = genealogy.persons[person_id]
+            parent_orders = []
+            generation_gaps = []
+            parent_rows = []
+            for relation in genealogy.family_child_relations:
+                if relation.child_id != person_id:
+                    continue
+                for parent_id in relation.parent_ids:
+                    if parent_id in person_ids:
+                        continue
+                    parent = genealogy.persons[parent_id]
+                    if parent.layout_hint.order is not None:
+                        parent_orders.append(parent.layout_hint.order)
+                    if (
+                        person.layout_hint.generation is not None
+                        and parent.layout_hint.generation is not None
+                    ):
+                        generation_gaps.append(
+                            person.layout_hint.generation
+                            - parent.layout_hint.generation
+                        )
+                    parent_rows.append(parent.source_key.row_number)
+            if parent_orders:
+                anchors[person_id] = (
+                    max(generation_gaps, default=1),
+                    sum(parent_orders) / len(parent_orders),
+                    min(parent_rows, default=person.source_key.row_number),
+                )
+
+        if len(anchors) != 2:
+            return ordered
+        if max(anchor[0] for anchor in anchors.values()) <= 1:
+            return ordered
+
+        first_order = anchors[ordered[0]][1]
+        second_order = anchors[ordered[1]][1]
+        if math.isclose(first_order, second_order, abs_tol=1e-9):
+            return ordered
+
+        # Put the partner continuing the visually earlier parent branch on the
+        # left. For a long cross-generation link this keeps its spouse outside a
+        # sibling bus instead of placing the reserved vertical corridor through
+        # that bus (the late-Capetian Philip of Evreux / Joan II case).
+        original_index = {person_id: index for index, person_id in enumerate(ordered)}
+        return tuple(
+            sorted(
+                ordered,
+                key=lambda person_id: (
+                    anchors[person_id][1],
+                    anchors[person_id][2],
+                    original_index[person_id],
+                ),
+            )
+        )
 
     @staticmethod
     def _family_source_offset(parent_ids, component) -> float:
