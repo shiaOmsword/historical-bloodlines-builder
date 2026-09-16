@@ -355,13 +355,11 @@ class OrthogonalConnectorRouter:
         source = self.source(family)
         targets = self.targets(family)
         obstacles = self._obstacles(family, previous)
+        static_obstacles = self._obstacles(family, [])
         seen: set[tuple] = set()
         candidates: list[FamilyRoute] = []
 
-        def add(items: tuple[Segment, ...], strategy: str) -> None:
-            items = normalize(items)
-            if not items or not self._clear(items, obstacles):
-                return
+        def append_candidate(items: tuple[Segment, ...], strategy: str) -> None:
             key = self._route_key(items)
             if key in seen:
                 return
@@ -376,6 +374,33 @@ class OrthogonalConnectorRouter:
                 )
             )
 
+        def add(items: tuple[Segment, ...], strategy: str) -> None:
+            items = normalize(items)
+            if not items or not self._clear(items, obstacles):
+                return
+            append_candidate(items, strategy)
+
+        def add_reserved(items: tuple[Segment, ...]) -> None:
+            """Validate a layout-reserved lane by geometry, not route padding.
+
+            Routes ending at an intermediate generation can leave only a tiny
+            strip before that generation's label boxes. Four-point aesthetic
+            padding intentionally does not fit there, but non-touching segments
+            are still unambiguous. The final ``issues`` pass remains the hard
+            safety check for actual crossings/touches/label hits.
+            """
+            items = normalize(items)
+            if not items or not self._clear(items, static_obstacles):
+                return
+            if any(
+                intersection(segment, other_segment) is not None
+                for segment in items
+                for route in previous
+                for other_segment in route.segments
+            ):
+                return
+            append_candidate(items, "reserved_corridor")
+
         canonical = self.canonical(family)
         add(canonical, "straight" if len(canonical) == 1 else "family_bus")
 
@@ -386,28 +411,32 @@ class OrthogonalConnectorRouter:
         lower = self.row_bottom[parent_top] + 7.0
         upper = min(y for _, y in targets) - 7.0
 
-        # The layout already made an empty vertical channel for long descendant
-        # links. Honour that contract explicitly instead of asking generic A* to
-        # rediscover the corridor after unrelated routes have occupied it. The
-        # short horizontal transfer stays inside the first inter-generation gap;
-        # several lane heights let sibling buses choose the remaining space.
         if self._uses_reserved_corridor(family) and targets:
             target = targets[0]
-            lane_y = lower
-            lane_ceiling = min(upper, lower + 12.0)
-            while lane_y <= lane_ceiling + EPS:
-                add(
-                    _segments(
-                        (
-                            source,
-                            (source[0], lane_y),
-                            (target[0], lane_y),
-                            target,
+            intermediate_tops = sorted(
+                {
+                    position.top_y
+                    for position in self.positions.values()
+                    if source[1] + EPS < position.top_y < target[1] - EPS
+                }
+            )
+            if intermediate_tops:
+                # Existing routes into the first intermediate row finish at
+                # top_y-END_GAP. Transfer one point below those endpoints and
+                # one point above the label-clearance rectangle, then use the
+                # vertical corridor already reserved by the layout solver.
+                transfer_y = intermediate_tops[0] - self.LABEL_CLEARANCE - 1.0
+                if source[1] + EPS < transfer_y < target[1] - EPS:
+                    add_reserved(
+                        _segments(
+                            (
+                                source,
+                                (source[0], transfer_y),
+                                (target[0], transfer_y),
+                                target,
+                            )
                         )
-                    ),
-                    "reserved_corridor",
-                )
-                lane_y += 4.0
+                    )
 
         y = lower
         while y <= upper + EPS:
@@ -500,8 +529,8 @@ class OrthogonalConnectorRouter:
         targets = self.targets(family)
         straight = len(targets) == 1 and abs(source[0] - targets[0][0]) < EPS
         return (
-            not self._uses_reserved_corridor(family),
             min(point[1] for point in targets),
+            not self._uses_reserved_corridor(family),
             -(min(point[1] for point in targets) - source[1]),
             len(targets) == 1,
             not straight,
@@ -510,7 +539,7 @@ class OrthogonalConnectorRouter:
         )
 
     def _plan_all_families(self, families: tuple) -> list[FamilyRoute] | None:
-        """Bounded global backtracking with memoized route-ownership states."""
+        """Backtrack globally while preserving top-to-bottom route ownership."""
 
         states = 0
         last_blocked = None
@@ -558,18 +587,15 @@ class OrthogonalConnectorRouter:
                     )
                 )
 
-            ordered = sorted(options, key=lambda item: (item[0], item[1]))
-            reserved = [
-                item for item in ordered if self._uses_reserved_corridor(item[2])
-            ]
-            if reserved:
-                # A reserved corridor is a layout guarantee. Let its long feeder
-                # claim that channel before ordinary buses can turn it into an
-                # obstacle; then the normal constrained search routes the rest.
-                next_choices = sorted(reserved, key=lambda item: item[1])
-            else:
-                minimum = ordered[0][0]
-                next_choices = [item for item in ordered if item[0] == minimum]
+            # Do not let a long link to a lower generation claim a horizontal
+            # separator before the routes into the intervening generation have
+            # terminated. We still backtrack through earlier candidates if a
+            # later row proves impossible, so this is not a greedy commitment.
+            earliest_target = min(item[1][0] for item in options)
+            row_options = [item for item in options if item[1][0] == earliest_target]
+            ordered = sorted(row_options, key=lambda item: (item[0], item[1]))
+            minimum = ordered[0][0]
+            next_choices = [item for item in ordered if item[0] == minimum]
 
             for _, _, family, candidates in next_choices:
                 rest = tuple(item for item in remaining if item is not family)
