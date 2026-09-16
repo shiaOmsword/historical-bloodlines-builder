@@ -11,7 +11,7 @@ from heapq import heappop, heappush
 
 
 def install_planar_readable_layout() -> None:
-    """Install planarity-aware layout and a bounded row-local route search."""
+    """Install planarity-aware layout and a bounded route search."""
 
     from historical_bloodlines.infrastructure.graph import readable_renderer
     from historical_bloodlines.infrastructure.graph.connector_routing import (
@@ -51,14 +51,7 @@ def install_planar_readable_layout() -> None:
             level,
             levels,
         ):
-            """Return components that must stay contiguous for a planar tree.
-
-            Two structures form a block:
-            * children sharing one multi-child family bus;
-            * same-level parent components whose children are spouses inside one
-              partner component.  The latter is what keeps two ancestry branches
-              adjacent before they join in a marriage component.
-            """
+            """Return components that must stay contiguous for a planar tree."""
 
             parent = {component_id: component_id for component_id in row}
             row_set = set(row)
@@ -79,7 +72,6 @@ def install_planar_readable_layout() -> None:
                 if left_root != right_root:
                     parent[right_root] = left_root
 
-            # A sibling bus cannot contain an unrelated cousin between children.
             for family in families:
                 children = []
                 seen = set()
@@ -97,8 +89,6 @@ def install_planar_readable_layout() -> None:
                     for component_id in children[1:]:
                         join(anchor, component_id)
 
-            # If two people in one marriage component have independent parents
-            # on this row, those parent branches must also remain adjacent.
             parents_by_child_component = defaultdict(set)
             for family in families:
                 parent_component = family.parent_component_id
@@ -257,10 +247,6 @@ def install_planar_readable_layout() -> None:
                         (child_component, family.source_offset, child_offset)
                     )
 
-            # Alternate downward/upward information through the layered graph.
-            # Manual order stays hard; only unnumbered components move between
-            # those anchors. This gives automatic bridge branches enough context
-            # to sit beside the ancestry they later marry into.
             for _ in range(6):
                 changed = False
                 for level in sorted(rows):
@@ -307,10 +293,6 @@ def install_planar_readable_layout() -> None:
                         precedence,
                     )
                     if ordered is None:
-                        # Contiguous topology blocks and explicit manual order are
-                        # contradictory. Keep the manual base layout so the router
-                        # can fail closed with the established generation/order
-                        # diagnostic rather than silently violating the workbook.
                         continue
                     if ordered != row:
                         changed = True
@@ -349,31 +331,37 @@ def install_planar_readable_layout() -> None:
             return centers, levels
 
     def _bounded_plan(self):
-        """Solve one target row at a time after layout removes branch reversals."""
+        """Backtrack ownership in a sliding window of adjacent target rows.
+
+        A long descendant feeder may need a corridor through the previous target
+        row.  Committing that previous row greedily is therefore insufficient.
+        Retry the current row together with up to two preceding rows, while
+        keeping older geometry fixed. This is bounded and deterministic but can
+        still reopen exactly the routes that can block a long feeder.
+        """
 
         self.search_count = 0
-        routes = []
         by_target_row = defaultdict(list)
         for family in self.families:
             target_row = round(min(y for _, y in self.targets(family)), 5)
             by_target_row[target_row].append(family)
 
+        row_keys = sorted(by_target_row)
+        routes_by_row = {}
         last_blocked = None
-        for target_row in sorted(by_target_row):
-            group = tuple(
-                sorted(by_target_row[target_row], key=self._family_priority)
-            )
+
+        def solve(families, base_routes, state_limit):
             states = 0
 
             def search(remaining, local):
                 nonlocal states, last_blocked
                 states += 1
-                if states > 4000:
+                if states > state_limit:
                     return None
                 if not remaining:
                     return list(local)
 
-                occupied = [*routes, *local]
+                occupied = [*base_routes, *local]
                 options = []
                 for family in remaining:
                     candidates = self._route_candidates(family, occupied)
@@ -389,9 +377,12 @@ def install_planar_readable_layout() -> None:
                         )
                     )
 
-                for _, _, family, candidates in sorted(
-                    options,
-                    key=lambda item: (item[0], item[1]),
+                ordered = sorted(options, key=lambda item: (item[0], item[1]))
+                minimum = ordered[0][0]
+                # Most constrained first; try ties because ownership order is
+                # part of the solution, not merely an optimisation detail.
+                for _, _, family, candidates in (
+                    item for item in ordered if item[0] == minimum
                 ):
                     rest = tuple(item for item in remaining if item is not family)
                     for route in candidates[:8]:
@@ -400,16 +391,55 @@ def install_planar_readable_layout() -> None:
                             return result
                 return None
 
-            planned = search(group, [])
-            if planned is None:
-                family = last_blocked or group[0]
+            return search(tuple(families), [])
+
+        for index, target_row in enumerate(row_keys):
+            solved = False
+            max_window = min(3, index + 1)
+            for window in range(1, max_window + 1):
+                start = index - window + 1
+                window_rows = row_keys[start : index + 1]
+                base_rows = row_keys[:start]
+                base_routes = [
+                    route
+                    for row in base_rows
+                    for route in routes_by_row.get(row, ())
+                ]
+                families = [
+                    family
+                    for row in window_rows
+                    for family in by_target_row[row]
+                ]
+                planned = solve(
+                    sorted(families, key=self._family_priority),
+                    base_routes,
+                    4000 * window,
+                )
+                if planned is None:
+                    continue
+
+                replacement = defaultdict(list)
+                for route in planned:
+                    row = round(min(y for _, y in route.targets), 5)
+                    replacement[row].append(route)
+                for row in window_rows:
+                    routes_by_row[row] = replacement[row]
+                solved = True
+                break
+
+            if not solved:
+                family = last_blocked or by_target_row[target_row][0]
                 raise RoutingConflict(
                     family,
                     "No downward, collision-free route satisfies the planar "
-                    "generation layout after bounded row backtracking",
+                    "generation layout after bounded adjacent-row backtracking",
                 )
-            routes.extend(planned)
 
+        routes = [
+            route
+            for row in row_keys
+            for route in routes_by_row.get(row, ())
+        ]
         issues = self.issues(routes)
         if issues:
             raise ValueError(f"Unsafe connector plan: {issues[0]!r}")
