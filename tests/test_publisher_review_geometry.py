@@ -163,15 +163,7 @@ def test_luxembourg_two_spouses_and_descendant_branch_is_routable(
     assert renderer.last_geometry["issues"] == ()
 
 
-def test_valois_side_branch_survives_capetian_sibling_bus(tmp_path) -> None:
-    """Reproduce the publisher Valois collision around Charles -> Philip VI.
-
-    Philip IV owns a wide sibling bus on the same parent row where Charles of
-    Valois has a single descendant. The single-descendant corridor must remain
-    routable without crossing the Capetian sibling bus or changing the manual
-    birth-order hints.
-    """
-
+def _valois_publisher_regression(philip_vi_order: int | None):
     genealogy = Genealogy()
     philip_iii = _person(genealogy, 1, "Philip III", 1, 20)
     isabella_aragon = _person(genealogy, 2, "Isabella of Aragon", 1, 10)
@@ -182,7 +174,7 @@ def test_valois_side_branch_survives_capetian_sibling_bus(tmp_path) -> None:
     charles_valois = _person(genealogy, 6, "Charles of Valois", 2, 30)
     louis_evreux = _person(genealogy, 7, "Louis of Evreux", 2, 40)
 
-    philip_vi = _person(genealogy, 8, "Philip VI of Valois", 3, 20)
+    philip_vi = _person(genealogy, 8, "Philip VI of Valois", 3, philip_vi_order)
     louis_x = _person(genealogy, 9, "Louis X", 3, 30)
     philip_v = _person(genealogy, 10, "Philip V", 3, 40)
     charles_iv = _person(genealogy, 11, "Charles IV", 3, 50)
@@ -220,11 +212,54 @@ def test_valois_side_branch_survives_capetian_sibling_bus(tmp_path) -> None:
         FamilyChildRelation(frozenset((philip_vi.id,)), john_ii.id)
     )
 
+    return genealogy, {
+        "philip_iv": philip_iv,
+        "charles_valois": charles_valois,
+        "philip_vi": philip_vi,
+        "louis_x": louis_x,
+    }
+
+
+def test_valois_side_branch_uses_automatic_cousin_order(tmp_path) -> None:
+    """Keep historical sibling orders while leaving cousin placement automatic.
+
+    Philip IV must precede Charles of Valois, and Louis X must be the first
+    represented son of Philip IV. Philip VI has no historical requirement to sit
+    before those cousins, so the layout is free to place the Valois branch on
+    the planar side of the Capetian sibling bus.
+    """
+
+    genealogy, people = _valois_publisher_regression(None)
     renderer = GraphvizGenealogyRenderer()
     renderer.render(genealogy, tmp_path / "valois.svg", title="Valois")
 
     assert renderer.last_geometry is not None
     positions = renderer.last_geometry["positions"]
-    assert positions[philip_vi.id].center_x < positions[louis_x.id].center_x
-    assert positions[charles_valois.id].center_x > positions[philip_iv.id].center_x
+    assert (
+        positions[people["charles_valois"].id].center_x
+        > positions[people["philip_iv"].id].center_x
+    )
+    assert (
+        positions[people["philip_vi"].id].center_x
+        > positions[people["louis_x"].id].center_x
+    )
     assert renderer.last_geometry["issues"] == ()
+
+
+def test_valois_crossed_manual_cousin_order_fails_closed(tmp_path) -> None:
+    """A manual cousin order that reverses the parent order is non-planar.
+
+    With Philip IV left of Charles but Philip VI forced left of Louis X, two
+    downward branches have reversed endpoints. The renderer must reject that
+    contradictory geometry instead of drawing a misleading crossing.
+    """
+
+    genealogy, _ = _valois_publisher_regression(20)
+    renderer = GraphvizGenealogyRenderer()
+
+    with pytest.raises(ValueError, match="No downward, collision-free route"):
+        renderer.render(
+            genealogy,
+            tmp_path / "valois-crossed.svg",
+            title="Valois",
+        )
