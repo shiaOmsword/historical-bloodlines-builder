@@ -1,10 +1,8 @@
 """Planarity-aware post-processing for the readable orthogonal layout.
 
-The workbook's ``order`` column is useful for birth order inside one sibling
-family, but a numeric value on an unrelated cousin must not force two ancestry
-branches to cross. The base layout remains responsible for component sizing,
-generation placement and manual partner orientation. This pass only chooses a
-safer left-to-right order for components that share a generation.
+Explicit ``order`` values remain hard left-to-right constraints.  Components
+without an order hint may move between those anchors so sibling buses and the
+parents of a marriage component stay contiguous whenever the topology permits.
 """
 from __future__ import annotations
 
@@ -29,44 +27,41 @@ def install_planar_readable_layout() -> None:
         _planar_ancestry_ordering = True
 
         @staticmethod
-        def _sibling_precedence(
-            genealogy,
+        def _manual_precedence(row, components):
+            """Preserve the workbook's global order hints exactly."""
+
+            manual = sorted(
+                (
+                    (components[component_id].order_hint, component_id)
+                    for component_id in row
+                    if components[component_id].order_hint is not None
+                ),
+                key=lambda item: item[0],
+            )
+            return {
+                (left_id, right_id)
+                for (_, left_id), (_, right_id) in zip(manual, manual[1:])
+            }
+
+        @staticmethod
+        def _topology_blocks(
+            row,
             families,
             component_by_person,
             level,
             levels,
         ):
-            """Return hard precedence only for explicitly ordered siblings."""
+            """Return components that must stay contiguous for a planar tree.
 
-            edges = set()
-            for family in families:
-                ordered = []
-                seen = set()
-                for child_id in family.child_ids:
-                    component_id = component_by_person[child_id]
-                    if component_id in seen or levels[component_id] != level:
-                        continue
-                    seen.add(component_id)
-                    order = genealogy.persons[child_id].layout_hint.order
-                    if order is not None:
-                        ordered.append((order, component_id))
-                ordered.sort()
-                for (_, left_id), (_, right_id) in zip(ordered, ordered[1:]):
-                    if left_id != right_id:
-                        edges.add((left_id, right_id))
-            return edges
-
-        @staticmethod
-        def _sibling_blocks(row, families, component_by_person, level, levels):
-            """Return blocks that may not be split by unrelated cousins.
-
-            A family bus is planar only when no unrelated component is inserted
-            between its children. Components linked by any multi-child family are
-            therefore unioned into one row block. Marriage components naturally
-            travel with the child person they contain.
+            Two structures form a block:
+            * children sharing one multi-child family bus;
+            * same-level parent components whose children are spouses inside one
+              partner component.  The latter is what keeps two ancestry branches
+              adjacent before they join in a marriage component.
             """
 
             parent = {component_id: component_id for component_id in row}
+            row_set = set(row)
 
             def find(component_id):
                 root = component_id
@@ -84,7 +79,7 @@ def install_planar_readable_layout() -> None:
                 if left_root != right_root:
                     parent[right_root] = left_root
 
-            row_set = set(row)
+            # A sibling bus cannot contain an unrelated cousin between children.
             for family in families:
                 children = []
                 seen = set()
@@ -97,11 +92,28 @@ def install_planar_readable_layout() -> None:
                     ):
                         seen.add(component_id)
                         children.append(component_id)
-                if len(children) < 2:
+                if len(children) >= 2:
+                    anchor = children[0]
+                    for component_id in children[1:]:
+                        join(anchor, component_id)
+
+            # If two people in one marriage component have independent parents
+            # on this row, those parent branches must also remain adjacent.
+            parents_by_child_component = defaultdict(set)
+            for family in families:
+                parent_component = family.parent_component_id
+                if parent_component not in row_set:
                     continue
-                anchor = children[0]
-                for component_id in children[1:]:
-                    join(anchor, component_id)
+                for child_id in family.child_ids:
+                    child_component = component_by_person[child_id]
+                    if child_component != parent_component:
+                        parents_by_child_component[child_component].add(parent_component)
+            for parent_components in parents_by_child_component.values():
+                items = list(parent_components)
+                if len(items) >= 2:
+                    anchor = items[0]
+                    for component_id in items[1:]:
+                        join(anchor, component_id)
 
             grouped = defaultdict(list)
             for component_id in row:
@@ -109,12 +121,12 @@ def install_planar_readable_layout() -> None:
             return list(grouped.values())
 
         @staticmethod
-        def _topological_row_order(row, desired, precedence, fallback):
+        def _topological_order(items, desired, precedence, fallback):
             outgoing = defaultdict(set)
-            indegree = {component_id: 0 for component_id in row}
-            row_set = set(row)
+            indegree = {item: 0 for item in items}
+            item_set = set(items)
             for left_id, right_id in precedence:
-                if left_id not in row_set or right_id not in row_set:
+                if left_id not in item_set or right_id not in item_set:
                     continue
                 if right_id in outgoing[left_id]:
                     continue
@@ -123,24 +135,24 @@ def install_planar_readable_layout() -> None:
 
             queue = []
             serial = 0
-            for component_id in row:
-                if indegree[component_id] == 0:
+            for item in items:
+                if indegree[item] == 0:
                     heappush(
                         queue,
                         (
-                            desired.get(component_id, fallback[component_id]),
-                            fallback[component_id],
+                            desired.get(item, fallback[item]),
+                            fallback[item],
                             serial,
-                            component_id,
+                            item,
                         ),
                     )
                     serial += 1
 
             result = []
             while queue:
-                _, _, _, component_id = heappop(queue)
-                result.append(component_id)
-                for next_id in outgoing[component_id]:
+                _, _, _, item = heappop(queue)
+                result.append(item)
+                for next_id in outgoing[item]:
                     indegree[next_id] -= 1
                     if indegree[next_id] == 0:
                         heappush(
@@ -153,7 +165,59 @@ def install_planar_readable_layout() -> None:
                             ),
                         )
                         serial += 1
-            return result if len(result) == len(row) else list(row)
+            return result if len(result) == len(items) else None
+
+        def _order_blocks(
+            self,
+            blocks,
+            desired,
+            fallback,
+            precedence,
+        ):
+            """Order whole topology blocks while respecting global hints."""
+
+            block_index = {
+                component_id: index
+                for index, block in enumerate(blocks)
+                for component_id in block
+            }
+            block_precedence = set()
+            for left_id, right_id in precedence:
+                left_block = block_index[left_id]
+                right_block = block_index[right_id]
+                if left_block != right_block:
+                    block_precedence.add((left_block, right_block))
+
+            block_desired = {
+                index: sum(desired[item] for item in block) / len(block)
+                for index, block in enumerate(blocks)
+            }
+            block_fallback = {
+                index: sum(fallback[item] for item in block) / len(block)
+                for index, block in enumerate(blocks)
+            }
+            ordered_block_ids = self._topological_order(
+                list(range(len(blocks))),
+                block_desired,
+                block_precedence,
+                block_fallback,
+            )
+            if ordered_block_ids is None:
+                return None
+
+            result = []
+            for block_id in ordered_block_ids:
+                block = blocks[block_id]
+                internal = self._topological_order(
+                    block,
+                    desired,
+                    precedence,
+                    fallback,
+                )
+                if internal is None:
+                    return None
+                result.extend(internal)
+            return result
 
         def _place_components(
             self,
@@ -178,26 +242,28 @@ def install_planar_readable_layout() -> None:
                 row.sort(key=lambda component_id: centers[component_id])
 
             incoming = defaultdict(list)
+            outgoing = defaultdict(list)
             for family in families:
                 parent_component = family.parent_component_id
                 for child_id in family.child_ids:
                     child_component = component_by_person[child_id]
                     if child_component == parent_component:
                         continue
+                    child_offset = components[child_component].person_offsets[child_id]
                     incoming[child_component].append(
-                        (
-                            parent_component,
-                            family.source_offset,
-                            components[child_component].person_offsets[child_id],
-                        )
+                        (parent_component, family.source_offset, child_offset)
+                    )
+                    outgoing[parent_component].append(
+                        (child_component, family.source_offset, child_offset)
                     )
 
-            first_level = min(rows, default=0)
-            for _ in range(5):
+            # Alternate downward/upward information through the layered graph.
+            # Manual order stays hard; only unnumbered components move between
+            # those anchors. This gives automatic bridge branches enough context
+            # to sit beside the ancestry they later marry into.
+            for _ in range(6):
                 changed = False
                 for level in sorted(rows):
-                    if level == first_level:
-                        continue
                     row = rows[level]
                     fallback = {
                         component_id: centers[component_id]
@@ -205,53 +271,47 @@ def install_planar_readable_layout() -> None:
                     }
                     desired = {}
                     for component_id in row:
-                        values = [
+                        values = []
+                        values.extend(
                             centers[parent_component]
                             + source_offset
                             - child_offset
                             for parent_component, source_offset, child_offset
                             in incoming.get(component_id, ())
-                        ]
+                        )
+                        values.extend(
+                            centers[child_component]
+                            + child_offset
+                            - source_offset
+                            for child_component, source_offset, child_offset
+                            in outgoing.get(component_id, ())
+                        )
                         desired[component_id] = (
                             sum(values) / len(values)
                             if values
                             else centers[component_id]
                         )
 
-                    precedence = self._sibling_precedence(
-                        genealogy,
-                        families,
-                        component_by_person,
-                        level,
-                        levels,
-                    )
-                    blocks = self._sibling_blocks(
+                    precedence = self._manual_precedence(row, components)
+                    blocks = self._topology_blocks(
                         row,
                         families,
                         component_by_person,
                         level,
                         levels,
                     )
-                    ordered_blocks = []
-                    for block in blocks:
-                        internal = self._topological_row_order(
-                            block,
-                            desired,
-                            precedence,
-                            fallback,
-                        )
-                        block_desired = sum(desired[item] for item in block) / len(block)
-                        block_fallback = sum(fallback[item] for item in block) / len(block)
-                        ordered_blocks.append(
-                            (block_desired, block_fallback, internal)
-                        )
-                    ordered_blocks.sort(key=lambda item: (item[0], item[1]))
-                    ordered = [
-                        component_id
-                        for _, _, block in ordered_blocks
-                        for component_id in block
-                    ]
-
+                    ordered = self._order_blocks(
+                        blocks,
+                        desired,
+                        fallback,
+                        precedence,
+                    )
+                    if ordered is None:
+                        # Contiguous topology blocks and explicit manual order are
+                        # contradictory. Keep the manual base layout so the router
+                        # can fail closed with the established generation/order
+                        # diagnostic rather than silently violating the workbook.
+                        continue
                     if ordered != row:
                         changed = True
                     rows[level] = ordered
@@ -265,6 +325,17 @@ def install_planar_readable_layout() -> None:
                     break
 
             for level, row in rows.items():
+                manual = [
+                    (components[item].order_hint, item)
+                    for item in row
+                    if components[item].order_hint is not None
+                ]
+                if [item for _, item in manual] != [
+                    item for _, item in sorted(manual)
+                ]:
+                    raise ValueError(
+                        f"Planar layout violated manual order in generation {level + 1}"
+                    )
                 for left_id, right_id in zip(row, row[1:]):
                     minimum = (
                         components[left_id].width / 2
