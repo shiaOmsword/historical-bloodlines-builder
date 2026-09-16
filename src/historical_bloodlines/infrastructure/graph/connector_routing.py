@@ -313,16 +313,16 @@ class OrthogonalConnectorRouter:
         def priority(family) -> tuple:
             source = self.source(family)
             targets = self.targets(family)
-            straight = len(targets) == 1 and abs(source[0] - targets[0][0]) < EPS
-            # Route the drawing from older generations downward. Within one
-            # parent row, establish branching family buses before exact
-            # single-child columns. A straight feeder can detour around an
-            # already-owned bus, while a bus spanning several children may be
-            # topologically unable to cross a straight feeder that was claimed
-            # first (the Luxembourg multi-spouse case is the canonical example).
+            # Families competing for the same descendant generation are the
+            # critical topological case. Reserve a sibling bus before any
+            # single-child feeder (including long links from an older row),
+            # because the feeder can detour around an owned bus while a bus may
+            # have no planar way through a feeder already spanning its target
+            # row. Source generation remains the next tie-breaker.
             return (
+                min(point[1] for point in targets),
+                len(targets) == 1,
                 source[1],
-                straight,
                 source[0],
                 tuple(str(person_id) for person_id in family.parent_ids),
             )
