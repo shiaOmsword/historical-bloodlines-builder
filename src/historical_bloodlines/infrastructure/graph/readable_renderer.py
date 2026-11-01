@@ -14,6 +14,7 @@ from historical_bloodlines.infrastructure.graph.connector_routing import (
     OrthogonalConnectorRouter,
     RoutingConflict,
     Segment,
+    intersection,
 )
 from historical_bloodlines.infrastructure.graph.labels import (
     PersonLabelFormatter,
@@ -64,6 +65,137 @@ def _marriage_source_center(
     return min(max(preferred, minimum), maximum)
 
 
+def _component_marriage_centers(anchors, pairs):
+    """Assign each partnership a distinct clear gap in its partner component.
+
+    With three spouses a pair's midpoint can fall inside another spouse's
+    label. Prefer the established midpoint, but match non-adjacent marriages
+    to available gaps rather than starting a descendant line inside text.
+    Layout and drawing must use this same assignment.
+    """
+    people = sorted(anchors, key=lambda person_id: anchors[person_id][0])
+    indices = {person_id: index for index, person_id in enumerate(people)}
+    pairs = sorted(
+        (pair for pair in pairs if pair.issubset(anchors)),
+        key=lambda pair: tuple(sorted(indices[person_id] for person_id in pair)),
+    )
+    if not pairs:
+        return {}
+
+    gaps = []
+    for left_id, right_id in zip(people, people[1:]):
+        left_x, left_width = anchors[left_id]
+        right_x, right_width = anchors[right_id]
+        gaps.append((
+            left_x + left_width / 2 + MARRIAGE_TEXT_CLEARANCE + MARRIAGE_SIGN_WIDTH / 2,
+            right_x - right_width / 2 - MARRIAGE_TEXT_CLEARANCE - MARRIAGE_SIGN_WIDTH / 2,
+        ))
+
+    candidates = {}
+    for pair in pairs:
+        left_id, right_id = sorted(pair, key=indices.get)
+        preferred = _marriage_source_center(*anchors[left_id], *anchors[right_id])
+        options = []
+        for index in range(indices[left_id], indices[right_id]):
+            minimum, maximum = gaps[index]
+            if minimum <= maximum:
+                center = min(max(preferred, minimum), maximum)
+                # Translation must not change ties between equally good gaps.
+                options.append((round(abs(center - preferred), 8), index, center))
+        candidates[pair] = sorted(options)
+
+    # Adjacent marriages have only one gap; reserve those first. Partner
+    # components are small, and pruning keeps the matching deterministic.
+    ordered = sorted(pairs, key=lambda pair: (len(candidates[pair]), pairs.index(pair)))
+    best = None
+    best_centers = None
+
+    def visit(index, used, centers, cost):
+        nonlocal best, best_centers
+        if best is not None and cost > best[0]:
+            return
+        if index == len(ordered):
+            score = cost, tuple(centers[pair] for pair in pairs)
+            if best is None or score < best:
+                best, best_centers = score, dict(centers)
+            return
+        pair = ordered[index]
+        for distance, gap, center in candidates[pair]:
+            if gap in used:
+                continue
+            centers[pair] = center
+            visit(index + 1, used | {gap}, centers, cost + distance)
+            del centers[pair]
+
+    visit(0, set(), {}, 0.0)
+    if best_centers is None:
+        raise ValueError("No distinct, label-free gaps for the partnership signs")
+    return best_centers
+
+
+def _nonadjacent_marriage_segments(positions, pairs, connectors):
+    """Visibly connect the actual spouses when another label separates them.
+
+    Moving an equals sign alone would suggest a marriage between neighbouring
+    wives. A short bridge above the intervening labels ties that sign back to
+    the true partner. Descendant routing treats these bridges as obstacles.
+    """
+    result = []
+    owned_segments = []
+    lanes = {}
+    for pair in sorted(pairs, key=lambda item: (
+        abs(positions[tuple(item)[0]].center_x - positions[tuple(item)[1]].center_x),
+        tuple(sorted(str(person_id) for person_id in item)),
+    )):
+        left_id, right_id = sorted(pair, key=lambda person_id: positions[person_id].center_x)
+        left, right = positions[left_id], positions[right_id]
+        intervening = [
+            position for person_id, position in positions.items()
+            if person_id not in pair
+            and math.isclose(position.top_y, left.top_y, abs_tol=1e-6)
+            and left.center_x < position.center_x < right.center_x
+        ]
+        if not intervening:
+            continue
+
+        sign_left, sign_right, lower_y = connectors[pair]
+        upper_y = lower_y - 4.0
+        lane = lanes.get(left.top_y, 0)
+        lanes[left.top_y] = lane + 1
+        lane_y = left.top_y - 10.0 - lane * 8.0
+        for start, end in (
+            (left.right + MARRIAGE_TEXT_CLEARANCE, sign_left),
+            (sign_right, right.left - MARRIAGE_TEXT_CLEARANCE),
+        ):
+            if end - start < 1e-6:
+                continue
+            crosses_label = any(
+                position.left < end and position.right > start
+                for position in intervening
+            )
+            points = (
+                ((start, upper_y), (start, lane_y), (end, lane_y), (end, upper_y))
+                if crosses_label else ((start, upper_y), (end, upper_y))
+            )
+            segments = tuple(
+                Segment(*first, *second)
+                for first, second in zip(points, points[1:])
+            )
+            for segment in segments:
+                for other_pair, other_segment in owned_segments:
+                    if pair.isdisjoint(other_pair) and intersection(segment, other_segment):
+                        raise ValueError("Unrelated partnership bridges would intersect")
+                for other_pair, (other_left, other_right, other_lower) in connectors.items():
+                    if not pair.isdisjoint(other_pair):
+                        continue
+                    if any(intersection(segment, Segment(other_left, y, other_right, y))
+                           for y in (other_lower, other_lower - 4.0)):
+                        raise ValueError("A partnership bridge would intersect an unrelated marriage")
+                owned_segments.append((pair, segment))
+            result.extend(segments)
+    return tuple(result)
+
+
 class _ReadablePersonLabelFormatter(PersonLabelFormatter):
     """Keep the approved typeface and leading without hiding connectors."""
 
@@ -98,6 +230,10 @@ class _ReadablePersonLabelFormatter(PersonLabelFormatter):
 
 class _ReadableOrthogonalGenealogyLayout(OrthogonalGenealogyLayout):
     """Use readable marriage centres and planar two-person orientation."""
+
+    def _build_partner_components(self, genealogy):
+        self._marriage_pairs = self._partnership_pairs(genealogy)
+        return super()._build_partner_components(genealogy)
 
     def _order_partner_component(self, genealogy, person_ids):
         ordered = super()._order_partner_component(genealogy, person_ids)
@@ -170,22 +306,16 @@ class _ReadableOrthogonalGenealogyLayout(OrthogonalGenealogyLayout):
             )
         )
 
-    @staticmethod
-    def _family_source_offset(parent_ids, component) -> float:
+    def _family_source_offset(self, parent_ids, component) -> float:
         if len(parent_ids) == 1:
             return component.person_offsets[parent_ids[0]]
 
-        ordered = sorted(
-            parent_ids,
-            key=lambda person_id: component.person_offsets[person_id],
+        centers = _component_marriage_centers(
+            {person_id: (component.person_offsets[person_id], box.width)
+             for person_id, box in component.person_boxes.items()},
+            self._marriage_pairs,
         )
-        left_id, right_id = ordered[0], ordered[-1]
-        return _marriage_source_center(
-            component.person_offsets[left_id],
-            component.person_boxes[left_id].width,
-            component.person_offsets[right_id],
-            component.person_boxes[right_id].width,
-        )
+        return centers[frozenset(parent_ids)]
 
 
 class GraphvizGenealogyRenderer(_BaseGraphvizGenealogyRenderer):
@@ -310,6 +440,19 @@ class GraphvizGenealogyRenderer(_BaseGraphvizGenealogyRenderer):
             component_by_person,
             families,
         )
+        nonadjacent_by_level = {}
+        for component in components.values():
+            indices = {person_id: index for index, person_id in enumerate(component.person_ids)}
+            count = sum(
+                abs(indices[tuple(pair)[0]] - indices[tuple(pair)[1]]) > 1
+                for pair in self._layout._partnership_pairs(genealogy)
+                if pair.issubset(indices)
+            )
+            level = levels[component.id]
+            nonadjacent_by_level[level] = nonadjacent_by_level.get(level, 0) + count
+        bridge_room = max(nonadjacent_by_level.values(), default=0) * 8.0
+        self._layout.LAYER_GAP = max(self.LAYER_GAP, bridge_room + 18.0)
+        self._layout.TITLE_AREA = self.TITLE_AREA + nonadjacent_by_level.get(0, 0) * 8.0
         person_positions, page_width, page_height = self._layout._place_people(
             components,
             component_centers,
@@ -325,6 +468,14 @@ class GraphvizGenealogyRenderer(_BaseGraphvizGenealogyRenderer):
             self._layout._partnership_pairs(genealogy),
             key=lambda pair: tuple(sorted(str(person_id) for person_id in pair)),
         )
+        marriage_centers = {}
+        for component in components.values():
+            marriage_centers.update(_component_marriage_centers(
+                {person_id: (person_positions[person_id].center_x,
+                             person_positions[person_id].width)
+                 for person_id in component.person_ids},
+                partnership_pairs,
+            ))
         for pair in partnership_pairs:
             person_a_id, person_b_id = sorted(
                 pair,
@@ -339,7 +490,9 @@ class GraphvizGenealogyRenderer(_BaseGraphvizGenealogyRenderer):
             upper_y = center_y - self.MARRIAGE_LINE_GAP / 2
             lower_y = center_y + self.MARRIAGE_LINE_GAP / 2
 
-            left_x, right_x = self._readable_marriage_sign_xs(pos_a, pos_b)
+            center_x = marriage_centers[pair]
+            left_x = center_x - self.MARRIAGE_SIGN_WIDTH / 2
+            right_x = center_x + self.MARRIAGE_SIGN_WIDTH / 2
             sign_width = right_x - left_x
 
             marriage_connectors[pair] = (left_x, right_x, lower_y)
@@ -351,12 +504,19 @@ class GraphvizGenealogyRenderer(_BaseGraphvizGenealogyRenderer):
                     )
                 )
 
+        partnership_segments = _nonadjacent_marriage_segments(
+            person_positions, partnership_pairs, marriage_connectors,
+        )
+        marriage_segments.extend(partnership_segments)
         router = OrthogonalConnectorRouter(
             person_positions,
             families,
             marriage_connectors,
             reserved_corridors=getattr(self._layout, "reserved_corridors", ()),
+            partnership_segments=partnership_segments,
         )
+        if any(box.hit(segment) for box in router.boxes for segment in marriage_segments):
+            raise ValueError("A partnership connector overlaps a person label")
         try:
             routes = router.plan()
         except RoutingConflict as exc:
@@ -435,6 +595,11 @@ class GraphvizGenealogyRenderer(_BaseGraphvizGenealogyRenderer):
             "width": page_width,
             "height": page_height,
             "segments": tuple(line_segments),
+            "partnership_segments": tuple(
+                Segment(segment.x1 + shift_x, segment.y1,
+                        segment.x2 + shift_x, segment.y2)
+                for segment in partnership_segments
+            ),
             "router_searches": router.search_count,
             "accepted_alignments": len(self._layout.accepted_alignments),
             "deferred_alignments": len(self._layout.deferred_alignments),

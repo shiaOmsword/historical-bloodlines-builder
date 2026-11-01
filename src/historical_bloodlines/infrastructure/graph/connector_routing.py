@@ -209,11 +209,13 @@ class OrthogonalConnectorRouter:
         families,
         marriage_connectors,
         reserved_corridors=(),
+        partnership_segments=(),
     ) -> None:
         self.positions: dict[object, PersonPosition] = positions
         self.families = families
         self.marriage_connectors = marriage_connectors
         self.reserved_corridors = frozenset(reserved_corridors)
+        self.partnership_segments = tuple(partnership_segments)
         self.boxes = tuple(
             Rect(
                 position.left - self.LABEL_CLEARANCE,
@@ -280,6 +282,10 @@ class OrthogonalConnectorRouter:
                 for box in self.boxes:
                     if box.hit(segment):
                         result.append(("label", index, segment, box))
+                for partnership in self.partnership_segments:
+                    hit = intersection(segment, partnership)
+                    if hit:
+                        result.append(("partnership", index, hit[0], hit[1]))
             for other_index, other in enumerate(routes[:index]):
                 for segment in route.segments:
                     for other_segment in other.segments:
@@ -292,6 +298,11 @@ class OrthogonalConnectorRouter:
 
     def _obstacles(self, family, previous: list[FamilyRoute]) -> tuple[Rect, ...]:
         obstacles = list(self.boxes)
+        for segment in self.partnership_segments:
+            left, top, right, bottom = segment.bounds
+            padding = self.LINE_CLEARANCE
+            obstacles.append(Rect(left - padding, top - padding,
+                                  right + padding, bottom + padding))
         pair = frozenset(family.parent_ids) if len(family.parent_ids) == 2 else None
         for partners, (left, right, lower_y) in self.marriage_connectors.items():
             if partners == pair:
