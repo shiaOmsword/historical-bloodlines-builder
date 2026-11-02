@@ -14,6 +14,8 @@ make rebuild-bot
 make up-proxy
 ```
 
+For the Xray XHTTP sidecar, use `make up-xray` instead of `make up-proxy`.
+
 The existing Compose bind mount exposes `data/render.yaml` as `/data/render.yaml`.
 After the initial code/dependency rebuild, changing this file affects the next
 uploaded workbook without another rebuild or restart:

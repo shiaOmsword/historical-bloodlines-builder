@@ -32,6 +32,6 @@ services:
     image: ghcr.io/sagernet/sing-box:v1.14.0
     profiles: ["proxy"]
     restart: unless-stopped
-    command: ["run", "-c", "/etc/sing-box/config.json"]
+    command: ["run", "-c", "/etc/proxy/config.json"]
     volumes:
-      - ./deploy/proxy/config.json:/etc/sing-box/config.json:ro
+      - ./deploy/proxy/config.json:/etc/proxy/config.json:ro

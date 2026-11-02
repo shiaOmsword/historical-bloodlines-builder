@@ -1,0 +1,7 @@
+services:
+  proxy:
+    image: ghcr.io/xtls/xray-core:26.10.31
+    user: "${BLOODLINES_UID:-1000}:${BLOODLINES_GID:-1000}"
+    command: ["run", "-config", "/etc/proxy/config.json"]
+    volumes:
+      - ./deploy/proxy/xray.json:/etc/proxy/config.json:ro
