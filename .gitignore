@@ -26,6 +26,7 @@ Thumbs.db
 
 # Private proxy configuration
 deploy/proxy/config.json
+deploy/proxy/xray.json
 
 # Generated document formats
 *.pdf

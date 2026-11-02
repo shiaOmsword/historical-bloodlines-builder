@@ -108,6 +108,38 @@ make logs
 
 The proxy service does not publish port `1080` to the public host. It is reachable only inside the Compose network as `proxy:1080`.
 
+### VLESS + XHTTP + TLS with Xray
+
+For a share link containing `type=xhttp&security=tls`, use the Xray sidecar instead of sing-box:
+
+```bash
+make proxy-config-xray
+```
+
+Paste the VLESS link at the hidden prompt. This creates the private, gitignored `deploy/proxy/xray.json`; it does not overwrite the sing-box configuration. The generator transfers the server, port, UUID, SNI, fingerprint, ALPN, XHTTP Host, path, mode and optional JSON `extra`. Query values are URL-decoded once. An omitted mode uses `auto`. This Xray generator supports XHTTP with TLS and `encryption=none`; use the existing sing-box generator for other transports. TLS certificate verification remains enabled.
+
+Set the same proxy address in `.env`:
+
+```dotenv
+TELEGRAM_PROXY_URL=socks5://proxy:1080
+```
+
+Then validate and start:
+
+```bash
+make proxy-check-xray
+make up-xray
+make logs
+```
+
+`make proxy-check-xray` checks the config with Xray itself; it does not test connectivity to the remote node. `make up-xray` recreates both proxy and bot, reloads `.env` and applies regenerated proxy settings. Send `/start` and a workbook to verify the complete Telegram path.
+
+This mode uses `compose.xray.yaml` over the base Compose file and replaces the same `proxy` service, so there is no second SOCKS listener or published host port. The official Xray image runs with the checkout UID/GID to read the configuration with mode `0600`. The VPS needs network access to the VLESS endpoint and a certificate valid for the link's SNI.
+
+After changing the VLESS link, repeat `make proxy-config-xray`, `make proxy-check-xray` and `make up-xray`. Normal bot-only updates (`make recreate-bot` / `make rebuild-bot`), logs, status and `make down` also work with this mode. Use `make up-xray` to start the proxy again after stopping the project; `make up-proxy` selects sing-box instead.
+
+To switch back to sing-box, generate/check its configuration with `make proxy-config` and `make proxy-check`, then run `make up-proxy`.
+
 ## 5. Usage
 
 Send `/start`, then attach an `.xlsx` workbook.

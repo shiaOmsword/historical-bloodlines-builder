@@ -2,6 +2,7 @@
 
 COMPOSE ?= docker compose
 PROXY_COMPOSE := $(COMPOSE) --profile proxy
+XRAY_COMPOSE := $(COMPOSE) -f compose.yaml -f compose.xray.yaml --profile proxy
 PYTHON ?= python3
 
 INPUT_FILE ?= input.xlsx
@@ -9,7 +10,7 @@ OUTPUT_NAME ?= genealogy
 
 .PHONY: help init build build-bot up-direct up-proxy down ps \
 	logs logs-bot logs-proxy restart-bot recreate-bot rebuild-bot \
-	proxy-config proxy-check smoke render-eps render-pdf
+	proxy-config proxy-check proxy-config-xray proxy-check-xray up-xray smoke render-eps render-pdf
 
 help:
 	@printf '%s\n' \
@@ -20,6 +21,7 @@ help:
 		'  make build-bot     - build only the bot image' \
 		'  make up-direct     - start bot with direct Telegram access' \
 		'  make up-proxy      - start sing-box proxy + bot' \
+		'  make up-xray       - start Xray XHTTP proxy + bot' \
 		'  make down          - stop all project services' \
 		'  make ps            - show Compose service status' \
 		'' \
@@ -33,6 +35,8 @@ help:
 		'' \
 		'  make proxy-config  - create sing-box config from a VLESS URI' \
 		'  make proxy-check   - validate generated sing-box config' \
+		'  make proxy-config-xray - create Xray config from a VLESS XHTTP + TLS URI' \
+		'  make proxy-check-xray  - validate generated Xray config' \
 		'  make smoke         - run full Docker renderer smoke test' \
 		'' \
 		'  make render-eps    - render data/input/$(INPUT_FILE) to EPS package' \
@@ -57,6 +61,9 @@ up-direct:
 
 up-proxy:
 	$(PROXY_COMPOSE) up -d proxy bot
+
+up-xray:
+	$(XRAY_COMPOSE) up -d --force-recreate proxy bot
 
 down:
 	$(PROXY_COMPOSE) down
@@ -87,7 +94,13 @@ proxy-config:
 	$(PYTHON) scripts/configure_vless_proxy.py
 
 proxy-check:
-	$(PROXY_COMPOSE) run --rm proxy check -c /etc/sing-box/config.json
+	$(PROXY_COMPOSE) run --rm proxy check -c /etc/proxy/config.json
+
+proxy-config-xray:
+	$(PYTHON) scripts/configure_vless_proxy.py --engine xray
+
+proxy-check-xray:
+	$(XRAY_COMPOSE) run --rm proxy run -test -config /etc/proxy/config.json
 
 smoke:
 	sh scripts/docker_smoke.sh

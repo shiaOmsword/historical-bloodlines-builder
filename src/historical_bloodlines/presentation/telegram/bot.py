@@ -138,7 +138,7 @@ async def run_bot() -> None:
     dispatcher = Dispatcher()
     dispatcher.include_router(_router(settings, TelegramGenerationService()))
 
-    proxy_mode = settings.proxy_url or "direct"
+    proxy_mode = "proxy" if settings.proxy_url else "direct"
     LOGGER.info("Starting Telegram bot, network=%s", proxy_mode)
     try:
         await dispatcher.start_polling(bot)
