@@ -133,15 +133,9 @@ def _component_marriage_centers(anchors, pairs):
     return best_centers
 
 
-def _nonadjacent_marriage_segments(positions, pairs, connectors):
-    """Visibly connect the actual spouses when another label separates them.
-
-    Moving an equals sign alone would suggest a marriage between neighbouring
-    wives. A short bridge above the intervening labels ties that sign back to
-    the true partner. Descendant routing treats these bridges as obstacles.
-    """
-    result = []
-    owned_segments = []
+def _nonadjacent_marriage_lanes(positions, pairs):
+    """Reserve an overhead lane for each non-adjacent partnership and its sign."""
+    result = {}
     lanes = {}
     for pair in sorted(pairs, key=lambda item: (
         abs(positions[tuple(item)[0]].center_x - positions[tuple(item)[1]].center_x),
@@ -158,28 +152,37 @@ def _nonadjacent_marriage_segments(positions, pairs, connectors):
         if not intervening:
             continue
 
-        sign_left, sign_right, lower_y = connectors[pair]
-        upper_y = lower_y - 4.0
         lane = lanes.get(left.top_y, 0)
         lanes[left.top_y] = lane + 1
-        lane_y = left.top_y - 10.0 - lane * 8.0
-        for start, end in (
-            (left.right + MARRIAGE_TEXT_CLEARANCE, sign_left),
-            (sign_right, right.left - MARRIAGE_TEXT_CLEARANCE),
+        result[pair] = left.top_y - 10.0 - lane * 8.0
+    return result
+
+
+def _nonadjacent_marriage_segments(
+    positions, pairs, connectors, *, attachment_offset, line_gap,
+):
+    """Join true spouses to their raised sign without joining adjacent signs."""
+    result = []
+    owned_segments = []
+    for pair in _nonadjacent_marriage_lanes(positions, pairs):
+        left_id, right_id = sorted(pair, key=lambda person_id: positions[person_id].center_x)
+        left, right = positions[left_id], positions[right_id]
+        sign_left, sign_right, lower_y = connectors[pair]
+        # Enter between the two bars so the bridge does not swallow the '='.
+        junction_y = lower_y - line_gap / 2
+        for source_x, sign_x, position in (
+            (left.right + MARRIAGE_TEXT_CLEARANCE, sign_left, left),
+            (right.left - MARRIAGE_TEXT_CLEARANCE, sign_right, right),
         ):
-            if end - start < 1e-6:
-                continue
-            crosses_label = any(
-                position.left < end and position.right > start
-                for position in intervening
-            )
             points = (
-                ((start, upper_y), (start, lane_y), (end, lane_y), (end, upper_y))
-                if crosses_label else ((start, upper_y), (end, upper_y))
+                (source_x, position.top_y + attachment_offset),
+                (source_x, junction_y),
+                (sign_x, junction_y),
             )
             segments = tuple(
                 Segment(*first, *second)
                 for first, second in zip(points, points[1:])
+                if first != second
             )
             for segment in segments:
                 for other_pair, other_segment in owned_segments:
@@ -189,7 +192,7 @@ def _nonadjacent_marriage_segments(positions, pairs, connectors):
                     if not pair.isdisjoint(other_pair):
                         continue
                     if any(intersection(segment, Segment(other_left, y, other_right, y))
-                           for y in (other_lower, other_lower - 4.0)):
+                           for y in (other_lower, other_lower - line_gap)):
                         raise ValueError("A partnership bridge would intersect an unrelated marriage")
                 owned_segments.append((pair, segment))
             result.extend(segments)
@@ -476,6 +479,7 @@ class GraphvizGenealogyRenderer(_BaseGraphvizGenealogyRenderer):
                  for person_id in component.person_ids},
                 partnership_pairs,
             ))
+        bridge_lanes = _nonadjacent_marriage_lanes(person_positions, partnership_pairs)
         for pair in partnership_pairs:
             person_a_id, person_b_id = sorted(
                 pair,
@@ -488,7 +492,8 @@ class GraphvizGenealogyRenderer(_BaseGraphvizGenealogyRenderer):
             name_y_b = pos_b.top_y + self.TEXT_PADDING_Y + self.LINE_HEIGHT / 2
             center_y = (name_y_a + name_y_b) / 2
             upper_y = center_y - self.MARRIAGE_LINE_GAP / 2
-            lower_y = center_y + self.MARRIAGE_LINE_GAP / 2
+            upper_y = bridge_lanes.get(pair, upper_y)
+            lower_y = upper_y + self.MARRIAGE_LINE_GAP
 
             center_x = marriage_centers[pair]
             left_x = center_x - self.MARRIAGE_SIGN_WIDTH / 2
@@ -506,6 +511,8 @@ class GraphvizGenealogyRenderer(_BaseGraphvizGenealogyRenderer):
 
         partnership_segments = _nonadjacent_marriage_segments(
             person_positions, partnership_pairs, marriage_connectors,
+            attachment_offset=self.TEXT_PADDING_Y + self.LINE_HEIGHT / 2,
+            line_gap=self.MARRIAGE_LINE_GAP,
         )
         marriage_segments.extend(partnership_segments)
         router = OrthogonalConnectorRouter(
@@ -600,6 +607,10 @@ class GraphvizGenealogyRenderer(_BaseGraphvizGenealogyRenderer):
                         segment.x2 + shift_x, segment.y2)
                 for segment in partnership_segments
             ),
+            "marriage_connectors": {
+                pair: (left + shift_x, right + shift_x, lower_y)
+                for pair, (left, right, lower_y) in marriage_connectors.items()
+            },
             "router_searches": router.search_count,
             "accepted_alignments": len(self._layout.accepted_alignments),
             "deferred_alignments": len(self._layout.deferred_alignments),
