@@ -8,10 +8,11 @@ from historical_bloodlines.application.dto import RawGenealogyRowDTO
 from historical_bloodlines.application.services import GenealogyAssembler, GenealogyRowParser
 from historical_bloodlines.config.render import load_render_config
 from historical_bloodlines.infrastructure.graph import GraphvizGenealogyRenderer
-from historical_bloodlines.infrastructure.graph.connector_routing import Rect
+from historical_bloodlines.infrastructure.graph.connector_routing import Rect, Segment, intersection
 from historical_bloodlines.infrastructure.graph.models import PersonPosition
 from historical_bloodlines.infrastructure.graph.readable_renderer import (
     _component_marriage_centers,
+    _nonadjacent_marriage_lanes,
     _nonadjacent_marriage_segments,
 )
 
@@ -77,6 +78,23 @@ def test_three_marriages_keep_true_parent_pairs_and_clear_connectors(tmp_path, p
         bridge.start[0] == pytest.approx(henry_position.right + 5)
         for bridge in geometry["partnership_segments"]
     )
+    jane = next(person for person in genealogy.persons.values() if person.name == "Джейн Сеймур")
+    pair = frozenset((henry.id, jane.id))
+    sign_left, sign_right, sign_lower = geometry["marriage_connectors"][pair]
+    assert sign_lower < henry_position.top_y
+    family_route = next(route for route in geometry["routes"]
+                        if frozenset(route.family.parent_ids) == pair)
+    assert family_route.source[1] == pytest.approx(sign_lower)
+    child_id = next(iter(family_route.family.child_ids))
+    assert (sign_left + sign_right) / 2 == pytest.approx(
+        geometry["positions"][child_id].center_x
+    )
+    for other_pair, (left, right, lower) in geometry["marriage_connectors"].items():
+        if other_pair == pair:
+            continue
+        for bridge in geometry["partnership_segments"]:
+            for y in (lower, lower - renderer.MARRIAGE_LINE_GAP):
+                assert intersection(bridge, Segment(left, y, right, y)) is None
     assert (tmp_path / "tudors.svg").stat().st_size > 100
 
 
@@ -107,7 +125,39 @@ def test_unrelated_partnership_bridges_still_fail_closed():
     centers = _component_marriage_centers(anchors, pairs)
     positions = {key: PersonPosition(x, 50.0, width, 30.0)
                  for key, (x, width) in anchors.items()}
-    connectors = {pair: (center - 6, center + 6, 61.5)
+    lanes = _nonadjacent_marriage_lanes(positions, pairs)
+    connectors = {pair: (center - 6, center + 6, lanes.get(pair, 57.5) + 4)
                   for pair, center in centers.items()}
     with pytest.raises(ValueError, match="intersect"):
-        _nonadjacent_marriage_segments(positions, pairs, connectors)
+        _nonadjacent_marriage_segments(
+            positions, pairs, connectors, attachment_offset=9.5, line_gap=4,
+        )
+
+
+@pytest.mark.parametrize("direction", [1, -1])
+def test_raised_marriage_bridge_reaches_both_true_spouses_and_its_sign(direction):
+    positions = {name: PersonPosition(direction * index * 130.0, 50.0, 100.0, 30.0)
+                 for index, name in enumerate(("wife1", "husband", "wife2", "wife3"))}
+    pairs = {frozenset(("husband", wife)) for wife in ("wife1", "wife2", "wife3")}
+    centers = _component_marriage_centers(
+        {key: (position.center_x, position.width) for key, position in positions.items()}, pairs,
+    )
+    lanes = _nonadjacent_marriage_lanes(positions, pairs)
+    remote_pair = frozenset(("husband", "wife3"))
+    assert set(lanes) == {remote_pair}
+    connectors = {pair: (center - 6, center + 6, lanes.get(pair, 57.5) + 4)
+                  for pair, center in centers.items()}
+    bridges = _nonadjacent_marriage_segments(
+        positions, pairs, connectors, attachment_offset=9.5, line_gap=4,
+    )
+    left, right = sorted((positions[person_id] for person_id in remote_pair),
+                         key=lambda position: position.center_x)
+    endpoints = {point for bridge in bridges for point in (bridge.start, bridge.end)}
+    sign_left, sign_right, sign_lower = connectors[remote_pair]
+    assert (left.right + 5, left.top_y + 9.5) in endpoints
+    assert (right.left - 5, right.top_y + 9.5) in endpoints
+    assert (sign_left, sign_lower - 2) in endpoints
+    assert (sign_right, sign_lower - 2) in endpoints
+    for bridge in bridges:
+        for y in (sign_lower, sign_lower - 4):
+            assert intersection(bridge, Segment(sign_left, y, sign_right, y)) is None
