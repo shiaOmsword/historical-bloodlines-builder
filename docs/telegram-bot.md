@@ -1,216 +1,69 @@
-# Telegram generation bot
+# Telegram-бот
 
-The bot is a thin presentation layer over the existing `BuildGenealogyUseCase`.
-It accepts one `.xlsx` workbook and returns:
+Это основной пользовательский интерфейс Historical Bloodlines. Бот работает на
+сервере, принимает Excel-книгу и использует тот же генератор, что и локальная
+команда `bloodlines`.
 
-- `genealogy.pdf` — multi-page preview;
-- `genealogy_publisher.zip` — publisher package with EPS files and preview PNGs.
+Для администратора: [установка на VPS](ubuntu-vps.md), [прокси](proxy.md),
+[настройки оформления](render-configuration.md).
 
-## 1. Update the VPS
+## Как получить схему
 
-```bash
-cd /opt/apps/historical-bloodlines-builder
-git checkout main
-git pull --ff-only origin main
-make init
-```
+1. Подготовьте книгу `.xlsx` по [описанию формата](excel-format.md).
+2. Откройте чат с развёрнутым ботом и отправьте `/start`.
+3. Прикрепите книгу как документ.
+4. Дождитесь сообщения о завершении и двух файлов.
 
-`make init` updates only `BLOODLINES_UID` / `BLOODLINES_GID` and preserves existing Telegram/proxy settings in `.env`.
+Доступ разрешён только пользователям, чьи **числовые Telegram user ID** указаны
+администратором в `TELEGRAM_ALLOWED_USER_IDS`. Username вида `@name` не подходит.
+По умолчанию принимаются файлы до 20 МиБ; локальный лимит задаётся переменной
+`TELEGRAM_MAX_UPLOAD_MB` и не отменяет ограничения самого Telegram Bot API.
 
-## 2. Configure Telegram access
+## Результаты
 
-Create a bot with BotFather and copy its token.
-Find the numeric Telegram user IDs of everyone who should be allowed to use the bot and put them into `.env`:
+| Файл | Назначение |
+| --- | --- |
+| `genealogy.pdf` | Многостраничный PDF: один заполненный лист книги — одна страница |
+| `genealogy_publisher.zip` | Каталог `genealogy_publisher/` с EPS, PNG-превью и YAML настроек |
 
-```dotenv
-TELEGRAM_BOT_TOKEN=123456:replace-me
-TELEGRAM_ALLOWED_USER_IDS=123456789
-TELEGRAM_MAX_UPLOAD_MB=20
-```
+В архиве для каждой родословной создаются `001_Название.eps` и
+`001_Название.preview.png`. Текст EPS переводится в контуры через промежуточный
+`svg:cairo` и CairoSVG. PNG создаётся отдельным рендером той же схемы;
+это не снимок EPS после импорта в издательскую программу.
 
-Several allowed users are comma-separated:
+`render-settings.yaml` содержит фактические настройки текущего задания, включая
+вычисленный межстрочный интервал. Это самостоятельный конфиг для локального CLI
+через `--render-config`. Для воспроизведения также нужны исходная книга и
+совместимое окружение рендера.
 
-```dotenv
-TELEGRAM_ALLOWED_USER_IDS=123456789,987654321,555555555
-```
+PDF по умолчанию имеет формат A5 landscape. Администратор может выбрать A4
+через `pdf.page_format` в [YAML рендера](render-configuration.md).
 
-The allowlist is mandatory. The bot refuses to start if it is empty.
+## Где менять данные и настройки
 
-After changing `TELEGRAM_ALLOWED_USER_IDS`, `TELEGRAM_BOT_TOKEN`, proxy settings or any other `.env` value, recreate the bot container so Compose reloads the environment:
+Сейчас бот принимает `/start` и документы `.xlsx`. Меню редактирования нет.
 
-```bash
-make recreate-bot
-```
+| Что нужно изменить | Где изменить |
+| --- | --- |
+| Людей, браки, детей, названия и примечания | В Excel, затем отправить книгу заново |
+| Размеры текста, интервалы, A5/A4 | На сервере в `data/render.yaml` |
+| Доступ пользователей, токен, прокси и лимит загрузки | В `.env`, затем `make recreate-bot` |
 
-A plain `make restart-bot` restarts the existing container with its current environment and does not reload changed `.env` values.
+YAML перечитывается перед обработкой каждой книги. Изменения посреди задания
+не смешивают стили: EPS, PNG и PDF строятся с одним снимком настроек.
 
-## 3. Direct network mode
+## Обработка и хранение
 
-If the VPS can reach Telegram directly:
+Внутри одного процесса задания рендера выполняются последовательно через
+семафор. Очередь находится в памяти процесса и не восстанавливается после
+перезапуска.
 
-```dotenv
-TELEGRAM_PROXY_URL=
-```
+Входной Excel и результаты находятся во временном каталоге задания внутри
+`data/telegram/` на сервере. После отправки файлов или обычного выхода с ошибкой
+каталог удаляется. Сервер не ведёт постоянный архив работ; скачивайте результаты
+и храните исходные книги отдельно.
 
-Start the bot:
-
-```bash
-make build-bot
-make up-direct
-make logs-bot
-```
-
-## 4. VLESS mode for a restricted VPS
-
-The project can run a private sing-box sidecar. Only the bot's Telegram traffic is sent through it; the whole VPS is not placed behind a tunnel.
-
-Generate `deploy/proxy/config.json` from a normal `vless://` share link:
-
-```bash
-make proxy-config
-```
-
-The command asks for the URI without echoing it to the terminal. The generated file is gitignored and is chmod `0600` where supported.
-
-Supported share-link modes include:
-
-- TLS;
-- Reality (`pbk`, `sid`, `sni`, `fp`);
-- plain TCP;
-- WebSocket;
-- gRPC;
-- HTTP / H2 transport;
-- HTTPUpgrade.
-
-Then set:
-
-```dotenv
-TELEGRAM_PROXY_URL=socks5://proxy:1080
-```
-
-Validate sing-box configuration:
-
-```bash
-make proxy-check
-```
-
-Start proxy and bot:
-
-```bash
-make up-proxy
-```
-
-Watch logs:
-
-```bash
-make logs
-```
-
-The proxy service does not publish port `1080` to the public host. It is reachable only inside the Compose network as `proxy:1080`.
-
-### VLESS + XHTTP + TLS with Xray
-
-For a share link containing `type=xhttp&security=tls`, use the Xray sidecar instead of sing-box:
-
-```bash
-make proxy-config-xray
-```
-
-Paste the VLESS link at the hidden prompt. This creates the private, gitignored `deploy/proxy/xray.json`; it does not overwrite the sing-box configuration. The generator transfers the server, port, UUID, SNI, fingerprint, ALPN, XHTTP Host, path, mode and optional JSON `extra`. Query values are URL-decoded once. An omitted mode uses `auto`. This Xray generator supports XHTTP with TLS and `encryption=none`; use the existing sing-box generator for other transports. TLS certificate verification remains enabled.
-
-Set the same proxy address in `.env`:
-
-```dotenv
-TELEGRAM_PROXY_URL=socks5://proxy:1080
-```
-
-Then validate and start:
-
-```bash
-make proxy-check-xray
-make up-xray
-make logs
-```
-
-`make proxy-check-xray` checks the config with Xray itself; it does not test connectivity to the remote node. `make up-xray` recreates both proxy and bot, reloads `.env` and applies regenerated proxy settings. Send `/start` and a workbook to verify the complete Telegram path.
-
-This mode uses `compose.xray.yaml` over the base Compose file and replaces the same `proxy` service, so there is no second SOCKS listener or published host port. The official Xray image runs with the checkout UID/GID to read the configuration with mode `0600`. The VPS needs network access to the VLESS endpoint and a certificate valid for the link's SNI.
-
-After changing the VLESS link, repeat `make proxy-config-xray`, `make proxy-check-xray` and `make up-xray`. Normal bot-only updates (`make recreate-bot` / `make rebuild-bot`), logs, status and `make down` also work with this mode. Use `make up-xray` to start the proxy again after stopping the project; `make up-proxy` selects sing-box instead.
-
-To switch back to sing-box, generate/check its configuration with `make proxy-config` and `make proxy-check`, then run `make up-proxy`.
-
-## 5. Usage
-
-Send `/start`, then attach an `.xlsx` workbook.
-
-The bot:
-
-1. verifies the Telegram user allowlist;
-2. verifies `.xlsx` extension and upload size;
-3. downloads the workbook into a private temporary job directory;
-4. serializes rendering with one process-wide semaphore;
-5. generates EPS + preview PNG and PDF through the existing application layer;
-6. sends PDF and publisher ZIP back to Telegram;
-7. removes the temporary job directory after sending.
-
-Renderer warnings are included in the result message. Exceptions are written to container logs without exposing tracebacks to Telegram users.
-
-## 6. Makefile operations
-
-Show all commands:
-
-```bash
-make
-```
-
-Status:
-
-```bash
-make ps
-```
-
-Bot logs:
-
-```bash
-make logs-bot
-```
-
-Proxy logs:
-
-```bash
-make logs-proxy
-```
-
-Restart bot without reloading `.env`:
-
-```bash
-make restart-bot
-```
-
-Recreate bot and reload `.env` changes:
-
-```bash
-make recreate-bot
-```
-
-Rebuild image and recreate bot after code changes:
-
-```bash
-make rebuild-bot
-```
-
-Full renderer smoke test:
-
-```bash
-make smoke
-```
-
-Manual renderer usage:
-
-```bash
-make render-pdf INPUT_FILE=book.xlsx OUTPUT_NAME=book
-make render-eps INPUT_FILE=book.xlsx OUTPUT_NAME=book
-```
-
-The workbook for manual rendering must be under `data/input/`.
+После успешной генерации бот показывает количество родословных и предупреждений
+(в сообщении — первые десять). При ошибке он сообщает о сбое, а подробности
+записывает в лог контейнера. Передайте администратору книгу и примерное время
+сбоя; действия для проверки описаны в [диагностике](troubleshooting.md).

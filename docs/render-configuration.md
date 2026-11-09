@@ -1,60 +1,80 @@
-# Render configuration (schema version 1)
+# Настройки рендера
 
-Rendering settings are immutable per build. With no configuration, the approved
-Roboto / Roboto Medium typography and validated orthogonal layout are unchanged.
-No historical content or generation/order hints are changed by these settings.
+Версия схемы YAML — `1`. Один конфиг управляет типографикой, интервалами и
+форматом PDF для CLI и Telegram-бота. Исторические данные, родство и подсказки
+поколения/порядка остаются в Excel.
 
-## Quick start on the existing VPS
+## На сервере
+
+Из корня checkout:
 
 ```bash
-cd /opt/apps/historical-bloodlines-builder
-# After checking out the feature branch and pulling its code:
 cp config/render.plus2.yaml data/render.yaml
-make rebuild-bot
-make up-proxy
+nano data/render.yaml
 ```
 
-For the Xray XHTTP sidecar, use `make up-xray` instead of `make up-proxy`.
+Compose монтирует `./data` в `/data`. Бот читает `/data/render.yaml` один раз
+перед каждой книгой: следующая отправка получит новые настройки, перезапуск
+не нужен. Внутри одного задания EPS/PNG/PDF используют один неизменяемый снимок.
+Он сохраняется в ZIP как `render-settings.yaml`.
 
-The existing Compose bind mount exposes `data/render.yaml` as `/data/render.yaml`.
-After the initial code/dependency rebuild, changing this file affects the next
-uploaded workbook without another rebuild or restart:
+Редактирование `config/render.plus2.yaml` само по себе не меняет бота:
+нужно скопировать файл в `data/render.yaml`. Для возврата к базовым значениям:
 
 ```bash
-cp config/render.plus3.yaml data/render.yaml
-# Restore the approved baseline explicitly:
 cp config/render.default.yaml data/render.yaml
 ```
 
-The bot reads the file once per workbook, before EPS, PNG and PDF generation. A
-change during a job cannot mix styles inside its bundle. The publisher ZIP also
-contains `render-settings.yaml`: a standalone snapshot of the settings used.
-An injected builder keeps its explicit configuration rather than reloading it.
-The desktop launcher reads settings when its builder is created: restart it after
-editing the file. It is not the bot's per-request lifecycle.
+Если в `.env` бота задан `BLOODLINES_RENDER_CONFIG`, он имеет приоритет над
+`/data/render.yaml`. Указывайте путь **в контейнере**, например
+`/data/custom.yaml`, и применяйте изменение окружения через `make recreate-bot`.
+Compose фиксирует `BLOODLINES_DATA_DIR=/data` для бота и renderer.
 
-## CLI and discovery
+## Локально
 
 ```bash
-poetry run bloodlines -i book.xlsx -o result.pdf --render-config config/render.plus2.yaml
-# Override only PDF paper size:
-poetry run bloodlines -i book.xlsx -o result.pdf --render-config config/render.plus3.yaml --paper a4
+poetry run bloodlines -i examples/input.example.xlsx -o data/output/custom.pdf --render-config config/render.plus2.yaml
+poetry run bloodlines -i examples/input.example.xlsx -o data/output/custom-a4.pdf --render-config config/render.plus3.yaml --paper a4
 ```
 
-Precedence: explicit `--render-config` (or Python `render_config_path`) >
-`BLOODLINES_RENDER_CONFIG` > `$BLOODLINES_DATA_DIR/render.yaml` > `./render.yaml` >
-built-in defaults. Relative paths resolve from the working directory. Discovery
-selects ONE file; it does not merge multiple files. Within that file, omitted
-fields use built-in defaults. A missing explicit/environment file is an error,
-not a silent fallback. The local root and data YAML files are gitignored.
+Можно скопировать пресет в `./render.yaml` и редактировать его. CLI создаёт
+новый builder при каждом запуске; launcher загружает конфиг при старте и
+требует перезапуска после изменений. В launcher выбранный в меню A5/A4
+передаётся явно и переопределяет `pdf.page_format`.
+
+## Приоритет выбора
+
+Используется первый подходящий вариант:
+
+1. `--render-config` CLI или `render_config_path` Python API.
+2. Переменная окружения `BLOODLINES_RENDER_CONFIG`.
+3. `$BLOODLINES_DATA_DIR/render.yaml`, **если переменная задана** и файл существует.
+4. `render.yaml` в текущем рабочем каталоге.
+5. Встроенные значения.
+
+Выбирается **один** файл, а не объединение конфигов. Пропущенные поля в нём
+берутся из встроенных значений, а не из другого пресета. Отсутствующий явно
+указанный файл или файл из `BLOODLINES_RENDER_CONFIG` — ошибка.
+Относительные пути отсчитываются от рабочего каталога процесса.
+
+Каталог «Документы» по умолчанию для входа/выхода сам по себе не участвует в
+поиске YAML: для поиска там задайте `BLOODLINES_DATA_DIR` явно. Локальный CLI
+не загружает `.env`. Сервис `renderer` тоже не получает весь `.env` автоматически;
+для разового переопределения используйте аргумент CLI, например:
+
+```bash
+docker compose run --rm renderer -i /data/input/input.xlsx -o /data/output/custom.pdf --render-config /data/custom.yaml
+```
+
+## Полный базовый конфиг
 
 ```yaml
 version: 1
 typography:
-  font_size_pt: 15.2
+  font_size_pt: 13.2
   line_height_pt: null
-  title_font_size_pt: 21
-  note_font_size_pt: 11
+  title_font_size_pt: 19
+  note_font_size_pt: 9
 layout:
   person_gap_pt: 34
   component_gap_pt: 22
@@ -68,60 +88,74 @@ pdf:
   page_format: a5
 ```
 
-`font_size_pt` covers person names, titles and dates. `title_font_size_pt` is the
-heading of the whole table; `note_font_size_pt` is for footnotes. Font families
-are intentionally not configurable in version 1. The two wrap limits are
-character counts, not points. All other dimensions above are native points.
-`pdf.page_format` affects PDF only, not native EPS/SVG/PNG canvas dimensions.
+| Поле | Назначение | Допустимо |
+| --- | --- | --- |
+| `typography.font_size_pt` | Имена, титулы, даты | 8–32 pt |
+| `typography.line_height_pt` | Высота строки; `null` — автоматически | 1.05–3 × размер текста |
+| `typography.title_font_size_pt` | Заголовок всей схемы | 10–48 pt |
+| `typography.note_font_size_pt` | Сноски из `Примечание` | 6–24 pt |
+| `layout.person_gap_pt` | Интервал между людьми | 24–200 pt |
+| `layout.component_gap_pt` | Интервал между компонентами | 12–200 pt |
+| `layout.layer_gap_pt` | Интервал между уровнями | 24–200 pt |
+| `layout.page_margin_x_pt`, `layout.page_margin_y_pt` | Поля исходного холста | 0–200 pt |
+| `layout.min_page_width_pt` | Минимальная ширина исходного холста | 100–4000 pt |
+| `layout.max_text_line`, `layout.max_name_line` | Лимиты переноса текста и имён в символах | Целые 4–120 |
+| `pdf.page_format` | Бумага PDF, landscape | `a5`, `a4` |
 
-Automatic leading follows `font_size_pt * 15 / 13.2`, rounded UP to an integer.
-Explicit fractional leading is also rounded up: Graphviz HTML rows use integer
-heights, so the layout's measured boxes must use exactly the same height.
-Baseline / +2 / +3 body sizes are 13.2 / 15.2 / 16.2 pt, with 15 / 18 / 19 pt
-leading. The experiment presets also add 2 or 3 pt to headings and footnotes.
+Границы включены. Семейства шрифтов в версии 1 фиксированы: Roboto и
+Roboto Medium. Лимиты переноса измеряются в символах; остальные размеры —
+в пунктах исходного холста. `pdf.page_format` не меняет холст EPS/SVG/PNG.
 
-Unknown keys, duplicate keys, unsupported schema versions, unsafe YAML tags,
-aliases, invalid types, non-finite numbers and out-of-range settings are rejected.
-The file size is limited to 64 KiB. A comment-only file uses defaults. Routing
-validation remains mandatory; a setting is not a guarantee that every workbook
-can be laid out with those constraints. Nothing disables the collision checks.
+Автоматическая высота строки — `font_size_pt × 15 / 13.2` с округлением вверх
+до целого. Явный дробный интервал тоже округляется вверх, чтобы измерение
+подписей совпадало с целочисленными строками Graphviz.
 
-## Native points are not the final printed point size
+## Пресеты
 
-PDF placement uniformly scales a native diagram to fit the selected paper:
+| Файл в `config/` | Основной текст | Заголовок | Сноска | Интервал строки |
+| --- | --- | --- | --- | --- |
+| `render.default.yaml` | 13.2 | 19 | 9 | 15 |
+| `render.plus2.yaml` | 15.2 | 21 | 11 | 18 |
+| `render.plus3.yaml` | 16.2 | 22 | 12 | 19 |
+| `render.publisher-review.yaml` | 15.2 | 21 | 15.2 | 18 |
 
-```text
+Все значения в таблице — native pt. Пресет `publisher-review` дополнительно
+уменьшает `person_gap_pt` с 34 до 28. Это отдельный вариант для проверки
+издательского оформления, а не автоматически выбранный пресет.
+
+## Размер в YAML и размер на бумаге
+
+PDF равномерно масштабирует исходную схему, чтобы она поместилась на A5/A4:
+
+```python
 scale = min(available_width / native_width,
             available_height / native_height,
-            max_upscale)
+            1.22)
 printed_font_size = native_font_size * scale
 ```
 
-Larger labels enlarge the diagram too. Therefore +3 native pt does NOT mean +3
-printed pt on A5. Increasing paper size or revising the layout is a separate
-choice. No non-uniform X/Y stretching is introduced by this feature.
+Увеличенные подписи увеличивают и холст, поэтому `+3 pt` в YAML не означает
+`+3 pt` в печатном A5. Для читаемости сравнивайте конечный PDF и при необходимости
+выбирайте A4; не рассчитывайте только на размер исходного текста.
 
-## Repeatable comparison
+## Проверка и сравнение
+
+Неизвестные/повторяющиеся ключи, неверные типы, неподдерживаемая версия,
+YAML aliases, небезопасные теги и значения вне диапазонов отклоняются.
+Максимальный размер файла — 64 КиБ. Пустой файл или только комментарии дают
+встроенные значения. Конфиг не отключает проверку геометрии связей.
+
+Для сравнения пресетов на своей книге:
 
 ```bash
-poetry run python scripts/compare_render_configs.py book.xlsx --output-dir comparison-01 --publisher
+poetry run python scripts/compare_render_configs.py examples/input.example.xlsx --output-dir comparison-01 --publisher
 ```
 
-The output directory must not already exist. The script runs the three included
-presets, retains native PDFs and settings snapshots, makes a complete PDF book
-only for variants with no failed sheets, and writes `report.json` with input and
-config hashes, runtime version, native dimensions, scale, final font size,
-geometry issue counts, warnings and errors. `--publisher` additionally writes
-outlined EPS and PNG previews and checks EPS for unexpected raster content.
-Custom presets can be supplied with repeated `--config path.yaml` arguments.
-The script returns a nonzero exit status if any sheet fails. PNG is a separate
-renderer preview, not a rasterization of the EPS importer used by the publisher.
-
-The local acceptance run used the supplied 14-sheet workbook (SHA256
-`2b7b3cdf450e3cff66edebe5257fd62fc2c0a66601285cfd3cdf56a4c79c9991`). All 42
-sheet/preset combinations rendered as PDF and outlined EPS with no reported
-routing conflicts. On that run, +2 yielded approximately +0.10 to +0.47 printed
-pt on A5, and +3 yielded +0.25 to +0.82 pt. The default PDF raster matched the
-unmodified `c0dd7f2` baseline in the same runtime. This is not a claim of binary
-identity with the previously uploaded PDF or of publisher approval. The actual
-workbook and generated documents are not checked into this repository.
+Каталог назначения не должен существовать. Без `--config` сравниваются
+`default`, `plus2`, `plus3`; свои файлы можно передать повторяющимся аргументом
+`--config path.yaml`. Скрипт сохраняет настройки, нативные PDF, общий PDF
+для вариантов без ошибок и `report.json` с хешами, размерами, масштабом,
+конечным размером шрифта, предупреждениями и ошибками.
+`--publisher` добавляет EPS с контурами и PNG-превью. При сбое хотя бы одного
+листа код завершения ненулевой. Проверка примера не гарантирует, что любая
+книга с произвольными ручными ограничениями будет успешно размещена.

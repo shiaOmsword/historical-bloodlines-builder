@@ -1,114 +1,178 @@
-# Ubuntu VPS deployment
+# Установка и обслуживание VPS
 
-This project can run the renderer in Docker so Graphviz, Cairo, Pango and fonts are fixed inside one Linux runtime instead of depending on the host workstation.
+Основной серверный сценарий — постоянно работающий Telegram-бот в Docker.
+CLI-генератор остаётся отдельным сервисом Compose для разовых запусков и проверок.
+Публичный HTTP-порт, домен, nginx, PostgreSQL и Redis не требуются: бот использует
+исходящий long polling к Telegram.
 
-## Recommended host
+## Подготовка
 
-Ubuntu 24.04 LTS or another current Ubuntu release with Docker Engine and the Docker Compose plugin.
-
-Suggested application directory:
+Нужен Linux-сервер с Git, Make, Docker Engine и плагином Docker Compose.
+Для скрипта настройки VLESS нужен Python 3 на хосте. На Ubuntu утилиты можно
+установить так:
 
 ```bash
-/opt/apps/historical-bloodlines-builder
+sudo apt-get update
+sudo apt-get install --yes git make python3
+docker --version
+docker compose version
 ```
 
-## First deployment
-
-Install Git and Docker using your normal server bootstrap process, then clone the repository:
+Docker установите до следующего шага и убедитесь, что текущая учётная запись
+может выполнять `docker` без `sudo`. Graphviz, Cairo/Pango, Roboto и Python
+приложения устанавливаются внутри образа.
 
 ```bash
 sudo mkdir -p /opt/apps
-sudo chown "$USER":"$USER" /opt/apps
+sudo chown "$USER":"$(id -gn)" /opt/apps
 cd /opt/apps
 git clone https://github.com/shiaOmsword/historical-bloodlines-builder.git
 cd historical-bloodlines-builder
+make init
 ```
 
-Initialize the Compose environment with the actual UID/GID of the account that owns the checkout:
+`make init` создаёт `.env`, каталоги `data/input`, `data/output`,
+`data/telegram`, `deploy/proxy` и записывает UID/GID владельца checkout.
+При повторном запуске обновляет только `BLOODLINES_UID` и `BLOODLINES_GID`,
+сохраняя остальные значения `.env`.
+
+## Конфигурация бота
+
+Создайте бота через BotFather и отредактируйте `.env`:
 
 ```bash
-sh scripts/init_vps.sh
+nano .env
 ```
 
-This writes `.env` using `id -u` and `id -g`, creates `data/input` and `data/output`, and verifies that the current user can write there.
+| Переменная | Значение / назначение |
+| --- | --- |
+| `TELEGRAM_BOT_TOKEN` | Обязательный токен от BotFather |
+| `TELEGRAM_ALLOWED_USER_IDS` | Обязательные числовые user ID через запятую; пустой список запрещает запуск |
+| `TELEGRAM_MAX_UPLOAD_MB` | Положительное целое число; по умолчанию `20` МиБ |
+| `TELEGRAM_PROXY_URL` | Пусто для прямого подключения или `socks5://proxy:1080` для sidecar |
+| `BLOODLINES_UID`, `BLOODLINES_GID` | UID/GID пользователя, которому принадлежат файлы на хосте |
 
-If the checkout was previously created or modified as root and initialization reports a permissions problem, fix ownership once:
+Пример нескольких пользователей:
+
+```dotenv
+TELEGRAM_BOT_TOKEN=123456:replace-me
+TELEGRAM_ALLOWED_USER_IDS=123456789,987654321
+TELEGRAM_MAX_UPLOAD_MB=20
+TELEGRAM_PROXY_URL=
+```
+
+Compose передаёт `.env` сервису `bot`. В Python-приложении загрузчика `.env`
+нет; при запуске вне Docker переменные нужно экспортировать в окружение.
+
+## Сборка и первый запуск
 
 ```bash
-sudo chown -R "$USER":"$(id -gn)" /opt/apps/historical-bloodlines-builder
-sh scripts/init_vps.sh
+make build-bot
+make smoke
 ```
 
-Build the image:
+`make smoke` пересобирает `renderer`, копирует пример в `data/input/smoke.xlsx`
+и создаёт EPS, PNG-превью и PDF в `data/output/`. Проверяется весь путь рендера,
+а не только наличие `dot`. Это не проверка связи с Telegram.
+
+Выберите сетевой режим:
+
+| Доступ к Telegram | Настройка | Запуск |
+| --- | --- | --- |
+| Напрямую | `TELEGRAM_PROXY_URL=` | `make up-direct` |
+| VLESS + XHTTP + TLS | [Настроить Xray](proxy.md#xray-vless--xhttp--tls) | `make up-xray` |
+| Другие VLESS-транспорты | [Настроить sing-box](proxy.md#sing-box) | `make up-proxy` |
 
 ```bash
-docker compose build renderer
+make ps
+make logs-bot
 ```
 
-Run the full container smoke test:
+Отправьте `/start` и `examples/input.example.xlsx` в Telegram. Должны прийти
+PDF и ZIP. `Ctrl+C` завершает просмотр логов; контейнер продолжает работать.
+
+## Изменение оформления
 
 ```bash
-sh scripts/docker_smoke.sh
+cp config/render.plus2.yaml data/render.yaml
+nano data/render.yaml
 ```
 
-The smoke script also exports the current host UID/GID before starting Compose, so stale `.env` values cannot make the bind-mounted output read-only.
+`./data` смонтирован в `/data`, поэтому бот видит файл как `/data/render.yaml`.
+Новый YAML применяется к следующей книге без перезапуска или сборки.
+Каталог `config/` не смонтирован в контейнер и не копируется Dockerfile:
+редактирование пресета в нём само по себе не меняет оформление бота.
 
-A successful smoke test proves that the container can:
-
-- start the Python application;
-- find system `dot` and `neato`;
-- load CairoSVG/Cairo/Pango;
-- resolve the generic `Sans` font;
-- read an `.xlsx` workbook;
-- render publisher EPS;
-- render the EPS preview PNG;
-- compose a PDF.
-
-## Rendering a real workbook
-
-Copy the workbook into `data/input`:
+Возврат к встроенному оформлению явным конфигом:
 
 ```bash
-cp /path/to/book.xlsx data/input/input.xlsx
+cp config/render.default.yaml data/render.yaml
 ```
 
-Publisher EPS package plus preview PNG files:
+Все поля и приоритеты: [настройки рендера](render-configuration.md).
 
-```bash
-docker compose run --rm renderer \
-  -i /data/input/input.xlsx \
-  -o /data/output/genealogy.eps
-```
+## Как применять изменения
 
-Multi-page PDF preview:
+| Изменение | Действие |
+| --- | --- |
+| `data/render.yaml` | Следующая отправленная книга |
+| Любая переменная `.env` бота | `make recreate-bot` |
+| Код Python, зависимости или Dockerfile | `make rebuild-bot` |
+| Перезапуск с прежним окружением и образом | `make restart-bot` |
+| Новый VLESS URI Xray | `make proxy-config-xray`, `make proxy-check-xray`, `make up-xray` |
 
-```bash
-docker compose run --rm renderer \
-  -i /data/input/input.xlsx \
-  -o /data/output/genealogy.pdf
-```
+`make restart-bot` **не перечитывает `.env`**. `make recreate-bot` и
+`make rebuild-bot` затрагивают только бота и не переключают работающий прокси.
+После полной остановки запускайте проект командой выбранного сетевого режима.
 
-The host receives generated files under `data/output` because `./data` is mounted at `/data` in the container.
+## Обновление кода
 
-## Updating the server
+Сначала сохраните свои конфиги и проверьте незакоммиченные изменения:
 
 ```bash
 cd /opt/apps/historical-bloodlines-builder
+git status --short
 git checkout main
 git pull --ff-only origin main
-sh scripts/init_vps.sh
-docker compose build renderer
-sh scripts/docker_smoke.sh
+make init
+make rebuild-bot
+make smoke
+make ps
 ```
 
-Do not replace the smoke test with only `dot -V`: the important production path includes Cairo/Pango/font rendering and EPS conversion.
+При изменении Compose-настроек Xray повторно выполните `make up-xray`.
+После обновления отправьте тестовую книгу боту.
 
-## Runtime model
+## Ручной рендер на том же сервере
 
-The Docker image is intentionally CLI-first. It does not expose ports and does not require nginx, a domain, TLS, PostgreSQL or Redis.
+```bash
+cp /path/to/book.xlsx data/input/book.xlsx
+make render-pdf INPUT_FILE=book.xlsx OUTPUT_NAME=book
+make render-eps INPUT_FILE=book.xlsx OUTPUT_NAME=book
+```
 
-The future Telegram bot should reuse the same application layer and renderer runtime. It can be added as a second Compose service without changing genealogy domain/rendering logic.
+Получатся `data/output/book.pdf` и каталог `data/output/book/` с EPS/PNG.
+Ручной рендер тоже читает `data/render.yaml`. Для A4 только в одном запуске:
 
-## Windows compatibility
+```bash
+docker compose run --rm renderer -i /data/input/book.xlsx -o /data/output/book-a4.pdf --paper a4
+```
 
-The existing Windows portable Graphviz path is left intact. Docker uses the system Graphviz installed in the Linux image; Windows builds may continue using the bundled runtime as before.
+## Состояние, логи и остановка
+
+| Команда | Назначение |
+| --- | --- |
+| `make` | Все команды Makefile |
+| `make ps` | Состояние сервисов |
+| `make logs-bot` | Логи бота |
+| `make logs-proxy` | Логи прокси |
+| `make logs` | Логи обоих сервисов |
+| `make down` | Остановить проект и удалить контейнеры/сеть Compose; файлы `data/` сохраняются |
+
+Бот и прокси используют `restart: unless-stopped`. Не запускайте одновременно
+несколько polling-процессов с одним токеном.
+
+Сохраняйте резервные копии `.env`, `data/render.yaml`, используемого
+`deploy/proxy/config.json` или `deploy/proxy/xray.json` и своих Excel-книг.
+Эти локальные настройки не попадают в Git. Задания в `data/telegram/`
+временные; постоянные ручные результаты лежат в `data/output/`.
