@@ -243,9 +243,8 @@ class _ReadableOrthogonalGenealogyLayout(OrthogonalGenealogyLayout):
         if len(ordered) != 2:
             return ordered
 
-        # An explicit person order remains authoritative. Automatic orientation
-        # is only needed when a two-person marriage joins branches whose ancestry
-        # depths differ; otherwise source order is the least surprising default.
+        # An explicit person order remains authoritative. Otherwise orient the
+        # spouses toward their parent branches, even without workbook hints.
         if any(
             genealogy.persons[person_id].layout_hint.order is not None
             for person_id in ordered
@@ -276,16 +275,25 @@ class _ReadableOrthogonalGenealogyLayout(OrthogonalGenealogyLayout):
                             - parent.layout_hint.generation
                         )
                     parent_rows.append(parent.source_key.row_number)
-            if parent_orders:
+            if parent_rows:
                 anchors[person_id] = (
                     max(generation_gaps, default=1),
-                    sum(parent_orders) / len(parent_orders),
-                    min(parent_rows, default=person.source_key.row_number),
+                    sum(parent_orders) / len(parent_orders)
+                    if parent_orders else min(parent_rows),
+                    min(parent_rows),
+                    bool(parent_orders),
                 )
 
         if len(anchors) != 2:
             return ordered
-        if max(anchor[0] for anchor in anchors.values()) <= 1:
+        # Manual priorities and source row numbers use different scales. Keep
+        # the established orientation if only one parent branch is numbered.
+        if len({anchor[3] for anchor in anchors.values()}) != 1:
+            return ordered
+        if (
+            all(anchor[3] for anchor in anchors.values())
+            and max(anchor[0] for anchor in anchors.values()) <= 1
+        ):
             return ordered
 
         first_order = anchors[ordered[0]][1]
@@ -293,10 +301,9 @@ class _ReadableOrthogonalGenealogyLayout(OrthogonalGenealogyLayout):
         if math.isclose(first_order, second_order, abs_tol=1e-9):
             return ordered
 
-        # Put the partner continuing the visually earlier parent branch on the
-        # left. For a long cross-generation link this keeps its spouse outside a
-        # sibling bus instead of placing the reserved vertical corridor through
-        # that bus (the late-Capetian Philip of Evreux / Joan II case).
+        # With no parent order hints, their source rows are the base layout's
+        # branch tie-breaker. Spouse source order can reverse those branches and
+        # trap an incoming route behind the other spouse's sibling bus.
         original_index = {person_id: index for index, person_id in enumerate(ordered)}
         return tuple(
             sorted(
