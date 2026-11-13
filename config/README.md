@@ -1,12 +1,20 @@
-# Render YAML and font-size experiments
+# Пресеты оформления
 
-See [the configuration guide](../docs/render-configuration.md).
+| Пресет | Для чего |
+| --- | --- |
+| `render.default.yaml` | Явные базовые настройки |
+| `render.plus2.yaml` | Основной текст, заголовки и сноски на 2 native pt больше базовых |
+| `render.plus3.yaml` | То же увеличение на 3 native pt |
+| `render.publisher-review.yaml` | Вариант +2 с крупными сносками и меньшим интервалом между людьми |
 
-Copy `render.plus2.yaml` or `render.plus3.yaml` to `../data/render.yaml`
-for the Docker bot, or pass `--render-config` to the CLI.
-`render.default.yaml` restores the approved baseline.
+Для Telegram-бота скопируйте выбранный файл из корня репозитория:
 
-For the 2026-09-16 publisher review round, `render.publisher-review.yaml` keeps
-+2 body/title typography, increases footnotes to the body size, and reduces the
-spouse gap from 34 pt to 28 pt. This profile is intentionally separate from the
-stable `plus2` preset so the earlier comparison remains reproducible.
+```bash
+cp config/render.plus2.yaml data/render.yaml
+```
+
+Он применится к следующей книге без перезапуска. Сам каталог `config/` не
+смонтирован в контейнер. Для CLI передавайте путь через `--render-config`.
+
+Полный справочник, приоритеты поиска и отличие native pt от размера на бумаге:
+[настройки рендера](../docs/render-configuration.md).
